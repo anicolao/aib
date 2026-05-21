@@ -16,6 +16,20 @@ information, and legal tactical choices without guessing at raw API fields.
 - [../docs/index.html](../docs/index.html): generated TypeDoc output for the
   exported types.
 
+## Reference Directories
+
+The sibling directories are useful as source material, but they serve different
+purposes:
+
+- [../../sync](../../sync): synced NP4 client assets. Use this for formulas and
+  client interpretation of raw scan fields.
+- [../../np4api](../../np4api): minimal scan-fetch examples. Use this for the
+  shape of API requests, not as a production client.
+- [../../npa](../../npa): mature browser-extension implementation with scan
+  merging, time travel, combat projection, visibility, and reports.
+- [../../np-tools](../../np-tools): standalone Bun exporter for authenticated
+  diplomacy messages and event feeds.
+
 ## Development Notes
 
 Install dependencies with `npm install`. The repository currently contains type
@@ -25,3 +39,6 @@ When extending the agent, keep raw scan parsing separate from strategic
 interpretation. The raw API uses compact field names such as `puid`, `st`, `nr`,
 and `yard`; higher-level code should translate those into concepts like owner,
 ships, resources, and production only after preserving the original facts.
+
+Keep the root [../README.md](../README.md) intentionally sparse. Put internal
+orientation material in `notes/` instead.

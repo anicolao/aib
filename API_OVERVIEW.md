@@ -1,51 +1,196 @@
 # Neptune's Pride API Overview
 
-This document provides a high-level guide to using the Neptune's Pride API. The API provides a comprehensive snapshot of the game state from the perspective of a specific player.
+This document is a working guide to the NP4 scan response used by `aib`. The
+scan is a complete-enough snapshot for one player, but it is not omniscient:
+fields appear or disappear based on that player's scanning range, diplomacy,
+and ownership.
+
+The TypeScript representation lives in [src/types.ts](src/types.ts). The
+checked-in [api.sample.json](api.sample.json) is useful for validating the
+model against an actual scan payload.
 
 ## Authentication and Fetching
 
-To access the API, you need a `GAME_ID` and an `API_KEY` (also referred to as a `code`). The endpoint is:
-`https://np.ironhelmet.com/api?game_number=[GAME_ID]&api_version=0.1&code=[API_KEY]`
+The scan endpoint requires a `GAME_ID` and an `API_KEY`, also called a `code`.
 
-The response is a JSON object where the root is `scanning_data`.
+```text
+https://np.ironhelmet.com/api?game_number=[GAME_ID]&api_version=0.1&code=[API_KEY]
+```
 
-## Core Concepts
+The response root is an object with a single `scanning_data` property:
 
-### 1. The Perspective System
-The API response is filtered based on the `playerUid` provided in the authentication. You will only see:
-- Full details for your own stars and fleets.
-- Infrastructure and ship counts for stars/fleets within your scanning range (`v: 1`).
-- Basic location and ownership for stars outside your range (`v: "0"`).
-- Fleets in transit that are within your scanning range.
+```ts
+interface ApiResponse {
+  scanning_data: ScanningData;
+}
+```
 
-### 2. Time and Ticks
-- `tick`: The current discrete time unit of the game.
-- `tickFragment`: A value between 0 and 1 indicating how much of the current tick has elapsed.
-- `now`: Server-side millisecond timestamp.
-- `tickRate`: The interval (in minutes) between production-relevant cycles (typically 60).
+All large collections under `scanning_data` are maps keyed by stringified
+numeric UIDs:
 
-### 3. Stars (`stars`)
-Stars are the primary nodes in the galaxy.
-- **Visible Stars (`v: 1`)**: Provide data on economy (`e`), industry (`i`), science (`s`), and current ship strength (`st`).
-- **Infrastructure**: Natural resources (`nr`) and terraformed resources (`r`) determine the cost and efficiency of upgrades.
-- **Production**: `yard` indicates fractional progress toward the next ship being built.
+- `stars: Record<string, Star>`
+- `fleets: Record<string, Fleet>`
+- `players: Record<string, Player>`
+- `victoryPoints: Record<string, number>`
 
-### 4. Fleets (`fleets`)
-Fleets carry ships between stars.
-- `st`: Total ships in the fleet.
-- `o`: An array of orders. Each order is a 4-element tuple: `[delay, starUid, action, argument]`.
-- `ouid`: The UID of the star the fleet is currently orbiting. If `0`, the fleet is in transit.
+Treat map keys as identifiers, not array indexes.
 
-### 5. Diplomacy and AI (`players`)
-- **Regard**: For AI players, `regard` determines cooperation. The AI always trades technology if `regard >= 0` and it is sent sufficient cash (at least `5 * totalEconomy`).
-- **Conceded**: Indicates player status: `0` (Active), `1` (Quit/AI-replaced), `2` (AFK), `3` (KO).
+## Perspective System
 
-### 6. Technology (`tech`)
-Tech is indexed by kind:
-0. **Banking**: Increases starting cash after production.
-1. **Research**: Increases research point generation.
-2. **Manufacturing**: Increases ship production per industry point.
-3. **Propulsion**: Increases fleet speed.
-4. **Scanning**: Increases scanning range.
-5. **Weapons**: Increases combat effectiveness.
-6. **Terraforming**: Increases the effective resources of stars.
+The API response is filtered for `scanning_data.playerUid`. An AI player should
+separate known facts from unknown facts before asking an LLM to evaluate a
+position.
+
+You can expect:
+
+- full player-private fields for the player whose API key produced the scan
+- full star infrastructure only for scanned stars
+- all star names, positions, owners, and visibility state
+- only fleets visible to the scanning player
+- partial public summaries for other players
+
+Do not infer missing infrastructure, cash, research progress, or fleet routes
+from absent fields. Absence usually means "not visible from this perspective",
+not zero.
+
+## Time and Production
+
+The current game time is represented by:
+
+- `tick`: the current discrete game tick
+- `tickFragment`: fraction of the current tick that has elapsed
+- `now`: server-side millisecond timestamp for the scan
+- `tickRate`: minutes per tick
+
+Production timing is represented separately:
+
+- `productionRate`: ticks between production cycles
+- `productionCounter`: ticks remaining until the next production cycle
+- `productions`: number of production cycles that have already occurred
+
+An agent planning future states should use `tick` and `tickFragment` for fleet
+movement, but `productionCounter` and `productionRate` for economic production.
+
+## Stars
+
+Stars are discriminated by `v`.
+
+### Unscanned Stars
+
+Unscanned stars have `v: "0"` in the current type model. They provide the shared
+`BaseStar` fields:
+
+- `uid`: star UID
+- `n`: star name
+- `x`, `y`: map coordinates
+- `puid`: owning player UID
+- `exp`: experience or defensive bonus field, depending on game settings
+
+They do not expose economy, industry, science, resources, ships, gate state, or
+shipyard progress.
+
+### Scanned Stars
+
+Scanned stars have `v: 1` and add:
+
+- `e`, `i`, `s`: economy, industry, and science infrastructure
+- `nr`: natural resources
+- `r`: terraformed resources
+- `st`: ships stationed at the star
+- `yard`: fractional progress toward the next ship
+- `ga`: stargate flag, `0` or `1`
+
+The current sample also contains rare `wh` fields on wormhole stars. That field
+is not yet represented in `src/types.ts`.
+
+## Fleets
+
+Fleets carry ships and orders. Important fields:
+
+- `uid`: fleet UID
+- `puid`: owning player UID
+- `x`, `y`: current coordinates
+- `lx`, `ly`: previous coordinates or last star coordinates
+- `st`: ships in the fleet
+- `speed`: current fleet speed
+- `ouid`: star UID if orbiting, or `0` while in transit
+- `o`: orders as `[delay, starUid, action, argument]`
+- `l`: looping-orders flag
+
+The observed scan sample includes `l` as both numeric flags and boolean
+`false`, and includes `lsuid` on some fleets. The current generated type is
+stricter than that sample.
+
+## Players
+
+Player objects combine public empire summaries with perspective-private data.
+The fields that are generally present include:
+
+- `uid`, `alias`, `avatar`, `race`, `color`, `shape`
+- `home`
+- `totalStars`, `totalFleets`, `totalStrength`
+- `totalEconomy`, `totalIndustry`, `totalScience`
+- `ready`, `missedTurns`, `conceded`, `ai`, `regard`
+- `tech`
+
+Fields such as `cash`, `war`, `countdown_to_war`, `ledger`, and
+`starsAbandoned` are visible for the scanning player in the checked-in sample,
+but not for every player. `researching` and `researchingNext` are also not
+universal in observed data.
+
+`conceded` uses:
+
+- `0`: active
+- `1`: quit or AI-replaced
+- `2`: AFK
+- `3`: knocked out
+
+For AI players, `regard` influences cooperation. Existing notes indicate that
+an AI trades technology when `regard >= 0` and the cash sent is at least
+`5 * totalEconomy`.
+
+## Technology
+
+`tech` is keyed by technology kind. Known kinds are:
+
+0. Banking
+1. Research
+2. Manufacturing
+3. Propulsion
+4. Scanning
+5. Weapons
+6. Terraforming
+
+Every observed tech entry has `kind` and `level`. `research` and `cost` are
+perspective-dependent in the sample; they are present where research progress is
+visible and absent elsewhere.
+
+## Type Model Caveats
+
+`src/types.ts` documents the intended scan shape, but the real sample currently
+shows a few places where raw API data is looser:
+
+- some `Player` fields modeled as required are only present for the scanning
+  player or otherwise visible players
+- some `TechInfo` fields modeled as required are absent on many public tech
+  entries
+- fleet `l` may be `false` as well as `0` or `1`
+- fleets may include `lsuid`
+- wormhole stars may include `wh`
+
+Until those types are reconciled, ingestion code should validate raw scan data
+at the boundary and preserve unknown fields for later analysis rather than
+silently dropping them.
+
+## LLM Agent Guidance
+
+When converting a scan into an LLM prompt or tool input:
+
+- keep UIDs in the representation so choices can be mapped back to API actions
+- label unscanned stars explicitly instead of filling in guessed values
+- distinguish current ships from future production
+- distinguish public player totals from private player fields
+- include `tick`, `tickFragment`, `productionCounter`, and `productionRate`
+  together when asking for time-sensitive plans
+- keep raw compact field names available near any friendly summaries, because
+  they are the stable API contract
