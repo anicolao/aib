@@ -1,11 +1,11 @@
-# Neptune's Pride 4 API Overview
+# Neptune's Pride API Overview
 
-This document provides a high-level guide to using the Neptune's Pride 4 (NP4) API effectively. The API provides a comprehensive snapshot of the game state from the perspective of a specific player.
+This document provides a high-level guide to using the Neptune's Pride API. The API provides a comprehensive snapshot of the game state from the perspective of a specific player.
 
 ## Authentication and Fetching
 
-To access the API, you need a `GAME_ID` and an `API_KEY` (also referred to as a `code`). The endpoint is typically:
-`https://np4.ironhelmet.com/api?game_number=[GAME_ID]&api_version=0.1&code=[API_KEY]`
+To access the API, you need a `GAME_ID` and an `API_KEY` (also referred to as a `code`). The endpoint is:
+`https://np.ironhelmet.com/api?game_number=[GAME_ID]&api_version=0.1&code=[API_KEY]`
 
 The response is a JSON object where the root is `scanning_data`.
 
@@ -37,7 +37,7 @@ Fleets carry ships between stars.
 - `ouid`: The UID of the star the fleet is currently orbiting. If `0`, the fleet is in transit.
 
 ### 5. Diplomacy and AI (`players`)
-- **Regard**: For AI players, `regard` determines their willingness to cooperate. A positive regard (improved by gifts of at least `5 * totalEconomy` gold) makes the AI more likely to trade tech.
+- **Regard**: For AI players, `regard` determines cooperation. The AI always trades technology if `regard >= 0` and it is sent sufficient cash (at least `5 * totalEconomy`).
 - **Conceded**: Indicates player status: `0` (Active), `1` (Quit/AI-replaced), `2` (AFK), `3` (KO).
 
 ### 6. Technology (`tech`)
@@ -49,10 +49,3 @@ Tech is indexed by kind:
 4. **Scanning**: Increases scanning range.
 5. **Weapons**: Increases combat effectiveness.
 6. **Terraforming**: Increases the effective resources of stars.
-
-## Effective Usage Tips
-
-- **Differential Scanning**: By comparing `v: 1` and `v: "0"` stars, you can map out enemy scanning ranges and identifies "dark" areas of the galaxy.
-- **ETAs**: Calculate travel time using `fleetSpeed`, `propulsion` tech, and the distance between star coordinates.
-- **Economic Planning**: Monitor `productionCounter` to time your infrastructure investments just before a production cycle to maximize immediate returns.
-- **AI Manipulation**: Use the `regard` mechanics to secure technology from AI players when human allies are unavailable.
