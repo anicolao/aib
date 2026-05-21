@@ -486,7 +486,9 @@ export interface Player {
      */
     ai: 0 | 1;
     /**
-     * Diplomatic regard from other players? (unknown purpose).
+     * Diplomatic regard from an AI player towards the human. 
+     * If regard >= 0, the AI may trade technology if sent enough money (at least 5 * totalEconomy) or technology.
+     * Combat at the AI's stars reduces regard; gifts or combat at human stars increases it.
      */
     regard: number;
     /**
