@@ -1,7 +1,7 @@
 {
   "name": "aib",
   "version": "1.0.0",
-  "description": "[![Build Status](https://github.com/example/aib/actions/workflows/ci.yml/badge.svg)](https://github.com/example/aib/actions)",
+  "description": "[![Build Status](https://github.com/anicolao/aib/actions/workflows/ci.yml/badge.svg)](https://github.com/anicolao/aib/actions)",
   "main": "index.js",
   "directories": {
     "doc": "docs"
