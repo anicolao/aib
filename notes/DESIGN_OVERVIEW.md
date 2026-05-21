@@ -17,16 +17,16 @@ in this directory.
   objective functions rather than loose heuristics.
 - Preserve the distinction between known scan facts, inferred state, and
   strategic speculation.
-- Use built-in AI diplomacy mechanics deliberately where they are available,
-  especially regard, cash gifts, and technology trades.
-- Run persistently in a reproducible Nix/NixOS environment with clear logs,
+- Play competently with and against human players, including negotiated trades,
+  alliance posture, threat assessment, and timing coordination.
+- Run as a scheduled Google Cloud Functions implementation with clear logs,
   replayable decisions, and recoverable state.
 
 ## Non-Goals for the First Iteration
 
 - Human-like personality, bluffing, or natural-language roleplay.
 - Real-time micro-optimization under clock pressure.
-- Autonomous play against unaware human opponents.
+- Autonomous play in public games without explicit consent.
 - Full replacement of the existing NPA UI.
 - General support for every historical Neptune's Pride API variant.
 
@@ -36,7 +36,7 @@ The player should split decisions by horizon and uncertainty.
 
 | Layer | Component | Function |
 | --- | --- | --- |
-| Strategic | Agentic AI | Interprets global state, tracks dispositions, chooses diplomatic and technology posture, and selects high-level goals. |
+| Strategic | LLM Planner | Interprets global state, tracks player relationships, chooses diplomatic and technology posture, and selects high-level goals. |
 | Tactical | Graph Search / A* | Computes carrier routes, reinforcement paths, interception opportunities, and range-limited attacks. |
 | Operational | Linear Program / MILP | Allocates credits across infrastructure, gates, carriers, and possibly science targets under budget and timing constraints. |
 
@@ -123,48 +123,76 @@ the full scan payload. It should set goals and policies such as:
 - expand, consolidate, defend, tech-rush, or prepare an attack
 - preferred research target
 - reserve ratio for tactical flexibility
-- players to trade with, bribe, attack, ignore, or keep viable
+- players to trade with, coordinate with, deter, attack, or ignore
 - acceptable risk thresholds for unscanned stars and unknown fleets
 
 The agent should be allowed to propose plans, but deterministic validators must
 reject illegal, unaffordable, or strategically inconsistent commands before they
 reach the game API.
 
-## Diplomacy and Built-In AI Handling
+## Human Diplomacy
 
-The built-in AI should be modeled as a predictable economic actor, not as a
-human opponent. The design name for this subsystem is the Triton protocol.
+The first milestone should focus on playing well in games with human players.
+Diplomacy should be modeled as a constrained decision problem over incentives,
+trust, timing, and military leverage rather than as a personality simulator.
 
 Responsibilities:
 
-- track each AI player's `regard`, economy, tech levels, status, and viability
-- evaluate cash gifts and tech trades as investments with expected return
-- prefer trade loops when cheaper than conquest or independent research
-- avoid destroying useful AI trade partners unless military value dominates
-- consider transferring low-value stars only when it improves long-term
-  tradeability or board position
+- track each player's public empire strength, visible military posture, known
+  messages, known trades, promises, threats, and prior cooperation
+- evaluate proposed cash, technology, and coordination trades as investments
+  with expected strategic return
+- identify mutually beneficial trades and timing agreements the bot can explain
+  clearly to a human player
+- maintain an explicit trust and risk model without assuming any player will act
+  predictably
+- separate generated message drafts from game-state actions so communication can
+  be reviewed or gated independently
 
-The protocol should be state-machine driven. It should record the expected
-effect of each gift, trade, or attack on future regard and technology access.
+The planner may draft concise messages, but the first implementation should
+prefer auditable recommendations and deterministic trade validation over broad
+autonomous negotiation.
 
 ## Execution Environment
 
-The intended runtime is a persistent cloud-hosted process, likely deployed in a
-Nix/NixOS environment and aligned with the `devcon` project architecture.
+The primary runtime target is Google Cloud Functions. A scheduled invocation
+should wake up roughly once per hour, fetch the latest game state, update stored
+state, make bounded decisions, and submit any validated commands.
 
 Runtime responsibilities:
 
-- fetch scans on a schedule appropriate to turn-based or real-time games
+- run from Cloud Scheduler or an equivalent scheduled trigger
+- fetch scans on each hourly invocation, with turn-based games allowed to skip
+  submission when no new turn is available
 - persist raw scans, normalized snapshots, forecasts, decisions, and submitted
-  commands
-- recover cleanly after process restarts
-- expose logs and decision traces for review
-- separate credentials and secrets from committed source
+  commands between stateless function invocations
+- use managed secrets for API keys and game credentials
+- make invocations idempotent so retries do not duplicate orders
+- expose structured logs and decision traces for review
 - support dry-run mode where decisions are produced but not submitted
 
-The first lab environment should be a private turn-based game against built-in
-AI players. This isolates strategic correctness from real-time latency and
-allows every decision to be replayed before command submission is automated.
+The first lab environment should be private turn-based games with consenting
+human players, plus replayed historical scans where available. This keeps the
+focus on human-player diplomacy and strategic quality while avoiding real-time
+latency concerns.
+
+## Local Debug CLI
+
+The cloud function should share its core implementation with a CLI entry point.
+The CLI should run one decision cycle and emit the same artifacts a single cloud
+function invocation would produce:
+
+- scan metadata and freshness
+- normalized state summary
+- forecast assumptions
+- candidate actions and objective scores
+- selected actions
+- rejected actions with reasons
+- command payloads in dry-run mode
+
+The local development environment may be a nix-darwin MacOS laptop, but that is
+only a development convenience. The code should not assume the laptop runtime is
+the production deployment target.
 
 ## Command Boundary
 
@@ -191,6 +219,8 @@ Useful test layers:
 - optimizer tests with small hand-solvable economies
 - replay tests over saved scan sequences
 - dry-run integration tests in private turn-based games
+- CLI/function parity tests that compare one CLI run with one function
+  invocation over the same stored input
 - regression tests for command validation and stale-scan rejection
 
 The first useful milestone is not "wins a game". It is a replayable turn where
@@ -219,6 +249,8 @@ specific tick.
 - Which solver should be used in the TypeScript runtime, and does it need MILP
   support immediately?
 - What is the minimal legal command API for private-game automation?
+- Which Google Cloud storage service should hold scan history, decisions, and
+  idempotency records?
 - How much belief-state history is needed before the bot can make useful
   unscanned-fleet assumptions?
 - How should risk tolerance be represented so an LLM can set policy without
