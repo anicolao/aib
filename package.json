@@ -2,17 +2,20 @@
   "name": "aib",
   "version": "1.0.0",
   "description": "[![Build Status](https://github.com/anicolao/aib/actions/workflows/ci.yml/badge.svg)](https://github.com/anicolao/aib/actions)",
-  "main": "index.js",
+  "main": "dist/function.js",
   "directories": {
     "doc": "docs"
-  },
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
+  "scripts": {
+    "test": "npm run typecheck",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "turn:dry-run": "node --no-warnings --loader ts-node/esm src/cli.ts"
+  },
   "devDependencies": {
     "@types/node": "^25.9.1",
     "ts-node": "^10.9.2",
