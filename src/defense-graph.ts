@@ -228,7 +228,7 @@ function isScanned(star: Star): star is ScannedStar {
 
 function activePlayer(scan: ScanningData, uid: number) {
     const player = scan.players[String(uid)];
-    return player !== undefined && player.totalStars > 0 && player.conceded === 0;
+    return player !== undefined && player.totalStars > 0;
 }
 
 function weaponsValue(player: Player | undefined) {

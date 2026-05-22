@@ -2386,7 +2386,7 @@ function neighboringEmpires(scan: ScanningData) {
     const maxNeighborDistance = Math.max(range * 3, scan.config.homeStarDistance * 1.5);
 
     return Object.values(scan.players)
-        .filter((player) => player.uid !== scan.playerUid && player.totalStars > 0 && player.conceded === 0)
+        .filter((player) => player.uid !== scan.playerUid && player.totalStars > 0)
         .map((player) => ({
             uid: player.uid,
             alias: player.alias,
@@ -2413,7 +2413,7 @@ function nearestDistanceToStars(source: Star, targets: Star[]) {
 
 function activePlayer(scan: ScanningData, playerUid: number) {
     const player = scan.players[String(playerUid)];
-    return player !== undefined && player.totalStars > 0 && player.conceded === 0;
+    return player !== undefined && player.totalStars > 0;
 }
 
 function diplomacyHistoryWith(myUid: number, theirUid: number, messages: unknown[]) {

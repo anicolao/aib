@@ -2,7 +2,7 @@ import type { Player, Star, TechInfo } from "./types.js";
 import { intrinsicStarValue } from "./star-value.js";
 
 const TECH = {
-    PROPULSION: 1,
+    PROPULSION: 3,
 } as const;
 
 export interface StarNode {
