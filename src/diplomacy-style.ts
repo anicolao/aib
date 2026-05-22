@@ -139,6 +139,8 @@ Hard requirements:
 - Lines labeled "Us" are our previous messages; use them only as background and do not answer or address them.
 - Address only ${draft.recipientAlias}. Do not write as if replying to multiple participants.
 - Do not add tactical claims, threats, promises, alliances, or game actions that are not in the plain draft.
+- Neptune's Pride hyperlinks player and star names with double brackets. Preserve existing [[Name]] link tokens, and enclose any player or star name you mention as [[Name]].
+- Do not ask for in-flight carriers to be recalled, redirected, diverted, turned around, or stopped. Once launched, carriers cannot be redirected; ask instead for no reinforcements, no follow-up attacks, compensation, or border talks when that matches the plain draft.
 - Do not mention Star Wars, Star Trek, any franchise, or any named character.
 - Keep it concise: under 140 words.
 - Return only the message body text. No markdown, no subject line, no commentary, no code block.

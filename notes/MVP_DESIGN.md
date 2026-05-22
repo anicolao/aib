@@ -97,6 +97,15 @@ Infrastructure is a greedy heuristic, not the final LP/MILP:
 Carrier routing is intentionally direct but no longer just "send everything to
 the frontier":
 
+- evaluate visible incoming attacks with a small battle calculator based on
+  ship counts and weapons levels
+- route existing idle carriers to reinforce stars that visible enemy fleets
+  would otherwise capture
+- choose a rally star that can reach threatened stars before likely enemy
+  arrivals, and mass existing carrier strength there when one star can cover
+  multiple threats
+- route idle carriers to attack visible enemy stars when the battle estimate
+  says the carrier wins
 - use one full production cycle as the expansion horizon
 - identify neutral stars directly reachable within that horizon
 - assign existing idle carriers to reachable neutral stars first
@@ -104,9 +113,12 @@ the frontier":
   stars, when source stars have spare ships
 - record a follow-up route for newly built carriers so live submission can use
   the returned fleet UID
-- after expansion coverage, build defensive carriers at owned stars with a
-  visible incoming threat inside the expansion horizon and no owned carrier
-  already present
+- after neutral expansion, if at least `$200` remains, build at most one
+  staging carrier from the largest owned star with more ships than the current
+  tick number and move roughly half that star's ships to an owned star closer
+  to an enemy empire
+- do not treat carrier construction as defense; defense requires moving
+  existing ships into position
 - do not route through multi-hop paths yet
 
 This is enough to produce a coherent first turn without pretending to be a full
@@ -121,6 +133,13 @@ Diplomacy is draft-only in the MVP:
   outbound diplomacy messages
 - when a friendly neighbor has the latest message, draft a reply that keeps the
   tech-trade conversation moving
+- when a visible enemy fleet is inbound to one of our stars, draft an objection
+  to that player and prefer that over routine trade outreach for the same turn
+- diplomacy bodies should wrap player and star names in `[[...]]` so the game
+  hyperlinks them
+- objection drafts should not ask for in-flight carriers to be redirected;
+  they should ask for no reinforcement or follow-up attacks, compensation, or
+  border talks
 - when `GEMINI_API_KEY` is configured, rewrite the draft body with a stable
   persona chosen from the game ID and player UID; persona archetypes are
   original sci-fi voices inspired by heroic or villainous space-opera and
