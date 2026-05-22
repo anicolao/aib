@@ -91,6 +91,15 @@ interface CarrierPlan {
     budget: number;
 }
 
+interface CarrierFleetAssignment {
+    fleet: Fleet;
+    source: MutableStar;
+    target: Star;
+    eta: number;
+    loadShips: number;
+    departureShips: number;
+}
+
 interface NeutralTarget {
     star: Star;
     nearestOwnedDistance: number;
@@ -101,6 +110,7 @@ interface NewCarrierAssignment {
     target: Star;
     distance: number;
     eta: number;
+    ships: number;
 }
 
 interface CarrierExecution {
@@ -146,6 +156,15 @@ interface SupplyShuttleAssignment {
     target: MutableStar;
     eta: number;
     score: number;
+}
+
+interface ReturnCarrierAssignment {
+    fleet: Fleet;
+    source: MutableStar;
+    target: MutableStar;
+    eta: number;
+    dropShips: number;
+    targetAvailableShips: number;
 }
 
 interface IncomingAttack {
@@ -316,6 +335,9 @@ const FLEET_ORDER = {
     GARRISON: 7,
 } as const;
 
+const NEUTRAL_CAPTURE_SHIPS = 5;
+const EXPANSION_SOURCE_GARRISON = 1;
+
 export function planTurn(
     scan: ScanningData,
     config: PlannerConfig,
@@ -373,6 +395,7 @@ export function planTurn(
         cash = carrierExecution.cash;
         builtCarriersThisTurn += carrierExecution.builtCount;
         executeSupplyShuttles(scan, stars, ownFleets, tacticalFleetUids, config.horizonTicks, commands, rejected);
+        executeReturnCarriers(scan, stars, ownFleets, tacticalFleetUids, config.horizonTicks, commands, rejected);
         const stagingExecution = executeShipStaging(scan, stars, cash, builtCarriersThisTurn, carrierPlan.budget - carrierExecution.spent, commands, rejected);
         cash = stagingExecution.cash;
         builtCarriersThisTurn += stagingExecution.builtCount;
@@ -1023,10 +1046,14 @@ function executeCarrierCoverage(
 
     for (const assignment of fleetAssignments) {
         unavailableFleetUids.add(assignment.fleet.uid);
+        assignment.source.st -= assignment.loadShips;
+        const action = assignment.loadShips > 0 ? FLEET_ORDER.COLLECT : FLEET_ORDER.NOTHING;
         commands.push({
             kind: "fleet_order",
-            order: `add_fleet_orders,${assignment.fleet.uid},0,${assignment.target.uid},0,0,0`,
-            reason: `idle carrier ${assignment.fleet.uid} routed to neutral ${assignment.target.n}; eta ${assignment.eta.toFixed(1)} ticks within expansion horizon`,
+            order: `add_fleet_orders,${assignment.fleet.uid},0,${assignment.target.uid},${action},${assignment.loadShips},0`,
+            reason: assignment.loadShips > 0
+                ? `idle carrier ${assignment.fleet.uid} loads ${assignment.loadShips} ships at ${assignment.source.n} and routes to neutral ${assignment.target.n} (NR ${territoryValue(assignment.target)}) with ${assignment.departureShips} ships; eta ${assignment.eta.toFixed(1)} ticks within expansion horizon`
+                : `idle carrier ${assignment.fleet.uid} routed to neutral ${assignment.target.n} (NR ${territoryValue(assignment.target)}) with ${assignment.departureShips} ships; eta ${assignment.eta.toFixed(1)} ticks within expansion horizon`,
         });
     }
 
@@ -1045,11 +1072,11 @@ function executeCarrierCoverage(
         cash -= cost;
         spent += cost;
         built += 1;
-        assignment.source.st -= 1;
+        assignment.source.st -= assignment.ships;
         const command: PlannedCommand = {
             kind: "new_fleet",
-            order: `new_fleet,${assignment.source.uid},1`,
-            reason: `build carrier at ${assignment.source.n} for neutral ${assignment.target.n}; eta ${assignment.eta.toFixed(1)} ticks within expansion horizon`,
+            order: `new_fleet,${assignment.source.uid},${assignment.ships}`,
+            reason: `build carrier at ${assignment.source.n} with ${assignment.ships} ships for neutral ${assignment.target.n} (NR ${territoryValue(assignment.target)}); eta ${assignment.eta.toFixed(1)} ticks within expansion horizon`,
         };
         command.followUpTargetUid = assignment.target.uid;
         command.followUpReason = `route new carrier to neutral ${assignment.target.n}`;
@@ -1100,7 +1127,7 @@ function assignSupplyShuttles(
     const assignments: SupplyShuttleAssignment[] = [];
     const assignedTargets = new Set<number>();
     const range = rangeValue(scan.players[String(scan.playerUid)]);
-    for (const fleet of idleOrbitingFleets(fleets, unavailableFleetUids)) {
+    for (const fleet of idleOrbitingFleets(fleets, unavailableFleetUids).filter((fleet) => fleet.st >= NEUTRAL_CAPTURE_SHIPS)) {
         const source = stars.find((star) => star.uid === fleet.ouid);
         if (!source) continue;
         const assignment = bestSupplyShuttle(scan, stars, source, fleet, assignedTargets, range, horizonTicks);
@@ -1134,6 +1161,103 @@ function bestSupplyShuttle(
             && assignment.eta <= horizonTicks
             && assignment.score > 1)
         .sort((a, b) => b.score - a.score || b.fleet.st - a.fleet.st || a.eta - b.eta || a.target.uid - b.target.uid)[0];
+}
+
+function executeReturnCarriers(
+    scan: ScanningData,
+    stars: MutableStar[],
+    fleets: Fleet[],
+    unavailableFleetUids: Set<number>,
+    horizonTicks: number,
+    commands: PlannedCommand[],
+    rejected: string[],
+) {
+    const assignments = assignReturnCarriers(scan, stars, fleets, unavailableFleetUids, horizonTicks);
+    for (const assignment of assignments) {
+        unavailableFleetUids.add(assignment.fleet.uid);
+        const action = assignment.dropShips > 0 ? FLEET_ORDER.DROP_ALL : FLEET_ORDER.NOTHING;
+        commands.push({
+            kind: "fleet_order",
+            order: `add_fleet_orders,${assignment.fleet.uid},0,${assignment.target.uid},${action},0,0`,
+            reason: assignment.dropShips > 0
+                ? `return carrier ${assignment.fleet.uid} from ${assignment.source.n} to resupply at ${assignment.target.n}; drops ${assignment.dropShips} ships before flying back, target has ${assignment.targetAvailableShips} spare ships, eta ${assignment.eta.toFixed(1)} ticks`
+                : `return empty carrier ${assignment.fleet.uid} from ${assignment.source.n} to resupply at ${assignment.target.n}; target has ${assignment.targetAvailableShips} spare ships, eta ${assignment.eta.toFixed(1)} ticks`,
+        });
+    }
+    if (assignments.length === 0) {
+        rejected.push("no idle underloaded carrier needed to return to a resupply star");
+    }
+}
+
+function assignReturnCarriers(
+    scan: ScanningData,
+    stars: MutableStar[],
+    fleets: Fleet[],
+    unavailableFleetUids: Set<number>,
+    horizonTicks: number,
+) {
+    const assignments: ReturnCarrierAssignment[] = [];
+    const range = rangeValue(scan.players[String(scan.playerUid)]);
+    const speed = Math.max(scan.fleetSpeed, 0.0001);
+    const starsByUid = new Map(stars.map((star) => [star.uid, star]));
+    const sourceShips = new Map<number, number>(stars.map((star) => [star.uid, Math.max(0, star.st - EXPANSION_SOURCE_GARRISON)]));
+
+    const idleFleets = fleets
+        .filter((fleet) => fleet.o.length === 0 && Boolean(fleet.ouid) && !unavailableFleetUids.has(fleet.uid))
+        .sort((a, b) => a.st - b.st || b.ouid - a.ouid || a.uid - b.uid);
+
+    for (const fleet of idleFleets) {
+        if (fleet.st >= NEUTRAL_CAPTURE_SHIPS) continue;
+        const source = starsByUid.get(fleet.ouid);
+        if (!source) continue;
+        const localLoadNeeded = Math.max(0, NEUTRAL_CAPTURE_SHIPS - fleet.st);
+        if ((sourceShips.get(source.uid) ?? 0) >= localLoadNeeded) continue;
+
+        const target = bestReturnCarrierTarget(scan, stars, source, fleet, range, speed, horizonTicks, sourceShips);
+        if (!target) continue;
+        source.st += fleet.st;
+        assignments.push({
+            fleet,
+            source,
+            target: target.star,
+            eta: target.eta,
+            dropShips: Math.max(0, fleet.st),
+            targetAvailableShips: target.availableShips,
+        });
+    }
+    return assignments;
+}
+
+function bestReturnCarrierTarget(
+    scan: ScanningData,
+    stars: MutableStar[],
+    source: MutableStar,
+    fleet: Fleet,
+    range: number,
+    speed: number,
+    horizonTicks: number,
+    sourceShips: Map<number, number>,
+) {
+    const sourceScore = frontierSupplyScore(scan, source);
+    const sourceAvailable = sourceShips.get(source.uid) ?? 0;
+    return stars
+        .filter((star) => star.uid !== source.uid)
+        .map((star) => {
+            const distance = starDistance(source, star);
+            const eta = etaTicks(distance, speed);
+            const availableShips = sourceShips.get(star.uid) ?? 0;
+            const targetScore = frontierSupplyScore(scan, star);
+            return { star, distance, eta, availableShips, targetScore };
+        })
+        .filter((candidate) => candidate.distance <= range
+            && candidate.eta <= horizonTicks
+            && candidate.availableShips >= NEUTRAL_CAPTURE_SHIPS
+            && (candidate.targetScore < sourceScore || candidate.availableShips >= sourceAvailable + NEUTRAL_CAPTURE_SHIPS))
+        .sort((a, b) => a.targetScore - b.targetScore
+            || b.availableShips - a.availableShips
+            || a.eta - b.eta
+            || b.star.st - a.star.st
+            || a.star.uid - b.star.uid)[0];
 }
 
 function frontierSupplyScore(scan: ScanningData, star: MutableStar) {
@@ -1402,9 +1526,10 @@ function assignCarrierCoverage(
     const range = rangeValue(scan.players[String(scan.playerUid)]);
     const speed = Math.max(scan.fleetSpeed, 0.0001);
     const assignedTargets = new Set<number>();
-    const fleetAssignments: { fleet: Fleet; target: Star; eta: number }[] = [];
+    const fleetAssignments: CarrierFleetAssignment[] = [];
     const newCarrierAssignments: NewCarrierAssignment[] = [];
-    const sourceShips = new Map<number, number>(stars.map((star) => [star.uid, Math.max(0, star.st - 1)]));
+    const sourceShips = new Map<number, number>(stars.map((star) => [star.uid, Math.max(0, star.st - EXPANSION_SOURCE_GARRISON)]));
+    const starsByUid = new Map(stars.map((star) => [star.uid, star]));
     const idleFleets = fleets
         .filter((fleet) => fleet.o.length === 0 && fleet.st > 0 && Boolean(fleet.ouid) && !unavailableFleetUids.has(fleet.uid))
         .sort((a, b) => b.st - a.st || a.uid - b.uid);
@@ -1421,10 +1546,22 @@ function assignCarrierCoverage(
     }
 
     for (const fleet of idleFleets) {
+        const source = starsByUid.get(fleet.ouid);
+        if (!source) continue;
+        const loadShips = Math.max(0, NEUTRAL_CAPTURE_SHIPS - fleet.st);
+        if ((sourceShips.get(source.uid) ?? 0) < loadShips) continue;
         const target = nearestReachableNeutralForFleet(scan, fleet, neutralTargets, assignedTargets, range, expansionHorizonTicks);
         if (!target) continue;
         assignedTargets.add(target.star.uid);
-        fleetAssignments.push({ fleet, target: target.star, eta: target.eta });
+        sourceShips.set(source.uid, (sourceShips.get(source.uid) ?? 0) - loadShips);
+        fleetAssignments.push({
+            fleet,
+            source,
+            target: target.star,
+            eta: target.eta,
+            loadShips,
+            departureShips: fleet.st + loadShips,
+        });
     }
 
     let plannedSpend = 0;
@@ -1438,13 +1575,14 @@ function assignCarrierCoverage(
         const source = bestCarrierSource(stars, sourceShips, target.star, range, speed, expansionHorizonTicks);
         if (!source) continue;
         assignedTargets.add(target.star.uid);
-        sourceShips.set(source.source.uid, (sourceShips.get(source.source.uid) ?? 0) - 1);
+        sourceShips.set(source.source.uid, (sourceShips.get(source.source.uid) ?? 0) - NEUTRAL_CAPTURE_SHIPS);
         plannedSpend += nextCost;
         newCarrierAssignments.push({
             source: source.source,
             target: target.star,
             distance: source.distance,
             eta: source.eta,
+            ships: NEUTRAL_CAPTURE_SHIPS,
         });
     }
 
@@ -1569,7 +1707,7 @@ function applyFleetOrderAction(fleetShips: number, starShips: number, action: nu
             break;
     }
     transferred = Math.max(-starShips, transferred);
-    transferred = Math.min(fleetShips - 1, transferred);
+    transferred = Math.min(fleetShips, transferred);
     return Math.max(0, fleetShips - transferred);
 }
 
@@ -1722,7 +1860,7 @@ function assignWinningAttacks(scan: ScanningData, ownFleets: Fleet[], assignedFl
     const attackedTargetUids = new Set<number>();
     const enemyTargets = Object.values(scan.stars)
         .filter((star): star is ScannedStar => isScanned(star) && star.puid > 0 && star.puid !== scan.playerUid)
-        .sort((a, b) => b.st - a.st || a.uid - b.uid);
+        .sort((a, b) => territoryValue(b) - territoryValue(a) || b.st - a.st || a.uid - b.uid);
     const range = rangeValue(scan.players[String(scan.playerUid)]);
     const margin = offensiveBattleMargin(scan);
 
@@ -1736,7 +1874,8 @@ function assignWinningAttacks(scan: ScanningData, ownFleets: Fleet[], assignedFl
                 return { target, distance, eta, estimate };
             })
             .filter((candidate) => candidate.distance <= range && candidate.estimate.attackerWins && candidate.estimate.attackerRemaining >= margin)
-            .sort((a, b) => b.estimate.attackerRemaining - a.estimate.attackerRemaining
+            .sort((a, b) => territoryValue(b.target) - territoryValue(a.target)
+                || b.estimate.attackerRemaining - a.estimate.attackerRemaining
                 || a.eta - b.eta
                 || b.target.st - a.target.st
                 || a.target.uid - b.target.uid)[0];
@@ -1748,7 +1887,7 @@ function assignWinningAttacks(scan: ScanningData, ownFleets: Fleet[], assignedFl
             target: attack.target,
             eta: attack.eta,
             role: "attack",
-            reason: `attack ${attack.target.n}; carrier ${fleet.uid} wins with ${attack.estimate.attackerRemaining} ships remaining by battle estimate against margin ${margin}`,
+            reason: `attack ${attack.target.n} (NR ${territoryValue(attack.target)}); carrier ${fleet.uid} wins with ${attack.estimate.attackerRemaining} ships remaining by battle estimate against margin ${margin}`,
         });
     }
     return assignments;
@@ -2292,7 +2431,9 @@ function reachableNeutralTargets(
             nearestOwnedDistance: nearestOwnedDistance(stars, star),
         }))
         .filter((target) => target.nearestOwnedDistance <= range && etaTicks(target.nearestOwnedDistance, speed) <= expansionHorizonTicks)
-        .sort((a, b) => a.nearestOwnedDistance - b.nearestOwnedDistance || a.star.uid - b.star.uid);
+        .sort((a, b) => territoryValue(b.star) - territoryValue(a.star)
+            || a.nearestOwnedDistance - b.nearestOwnedDistance
+            || a.star.uid - b.star.uid);
 }
 
 function isNeutralStar(star: Star) {
@@ -2321,7 +2462,10 @@ function nearestReachableNeutralForFleet(
             };
         })
         .filter((target) => target.distance <= range && target.eta <= expansionHorizonTicks)
-        .sort((a, b) => a.eta - b.eta || a.distance - b.distance || a.star.uid - b.star.uid)[0];
+        .sort((a, b) => territoryValue(b.star) - territoryValue(a.star)
+            || a.eta - b.eta
+            || a.distance - b.distance
+            || a.star.uid - b.star.uid)[0];
 }
 
 function bestCarrierSource(
@@ -2333,7 +2477,7 @@ function bestCarrierSource(
     expansionHorizonTicks: number,
 ) {
     return stars
-        .filter((star) => (sourceShips.get(star.uid) ?? 0) > 0)
+        .filter((star) => (sourceShips.get(star.uid) ?? 0) >= NEUTRAL_CAPTURE_SHIPS)
         .map((source) => {
             const distance = starDistance(source, target);
             return {
@@ -2387,6 +2531,10 @@ function frontierWeight(scan: ScanningData, star: ScannedStar) {
 
 function isScanned(star: Star): star is ScannedStar {
     return (star as { v: unknown }).v === 1 || (star as { v: unknown }).v === "1";
+}
+
+function territoryValue(star: Star) {
+    return safeNumber((star as { nr?: unknown }).nr, 0);
 }
 
 function starDistance(a: Pick<Star, "x" | "y">, b: Pick<Star, "x" | "y">) {
