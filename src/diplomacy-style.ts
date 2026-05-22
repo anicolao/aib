@@ -62,6 +62,9 @@ function seedValue(value: string) {
 }
 
 async function flavorDraft(draft: DiplomacyDraft, persona: Persona, config: GeminiConfig): Promise<DiplomacyDraft> {
+    if (draft.skipFlavor) {
+        return draft;
+    }
     try {
         const generated = await generateFlavor(draft, persona, config);
         return {

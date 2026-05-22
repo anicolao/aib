@@ -171,9 +171,10 @@ Technology transfer is event-triggered:
 - send `share_tech,[recipientUid],[techKind]` only when the thread identifies
   an equivalent-level tech we can send and the sender has not attacked us
 - if that sender has an inbound attack, draft an outraged note instead of
-  sending technology
+  sending technology; send only one such note for the same received technology
 - if that sender attacked in the past but has no inbound attack, draft a note
-  saying we will consider trading after a longer period of peace
+  saying we will consider trading after a longer period of peace; send only
+  one such note for the same received technology
 - reserve the cash needed for planned tech transfers before infrastructure
   spending
 

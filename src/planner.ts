@@ -50,6 +50,7 @@ export interface DiplomacyDraft {
     plainSubject?: string;
     plainBody?: string;
     flavorError?: string;
+    skipFlavor?: boolean;
 }
 
 interface MutableStar extends ScannedStar {
@@ -621,6 +622,10 @@ function planTechTransfers(
         const aggr = aggressionStatus(scan, receipt.fromUid, gameEvents, incomingAttackerUids);
 
         if (aggr.incoming) {
+            if (alreadySentTechRefusal(history, scan.playerUid, receipt, "incoming")) {
+                alreadyHandled.add(receipt.fromUid);
+                continue;
+            }
             diplomacyDrafts.push(techTradeDiplomacyDraft(
                 scan,
                 sender,
@@ -640,6 +645,10 @@ function planTechTransfers(
         }
 
         if (aggr.anyPast) {
+            if (alreadySentTechRefusal(history, scan.playerUid, receipt, "past")) {
+                alreadyHandled.add(receipt.fromUid);
+                continue;
+            }
             diplomacyDrafts.push(techTradeDiplomacyDraft(
                 scan,
                 sender,
@@ -779,6 +788,32 @@ function canSendEquivalentLevel(scan: ScanningData, recipient: Player, techKind:
     return recipientLevel + 1 === level && techLevel(player, techKind) >= level;
 }
 
+function alreadySentTechRefusal(history: DiplomacyEvent[], myUid: number, receipt: SharedTechnologyEvent, kind: "incoming" | "past") {
+    const tech = techName(receipt.techKind);
+    return history.some((event) => {
+        if (event.fromUid !== myUid || !event.body) return false;
+        const body = event.body.toLowerCase();
+        const mentionsReceipt = body.includes(tech.toLowerCase())
+            || body.includes("technology")
+            || body.includes("tech");
+        if (!mentionsReceipt) return false;
+        if (kind === "incoming") {
+            return body.includes("not reciprocate")
+                || body.includes("not sending")
+                || body.includes("tech-receipt-hold")
+                || body.includes("while your fleets are inbound")
+                || body.includes("attacking with the other")
+                || body.includes("trust can be rebuilt");
+        }
+        return body.includes("not sending")
+            || body.includes("tech-receipt-hold")
+            || body.includes("longer period of peace")
+            || body.includes("revisit tech trading")
+            || body.includes("combat between us")
+            || (body.includes("peace") && body.includes("trade"));
+    });
+}
+
 function techTradeDiplomacyDraft(
     scan: ScanningData,
     recipient: Player,
@@ -798,6 +833,7 @@ function techTradeDiplomacyDraft(
         subject,
         body,
         reason,
+        skipFlavor: true,
     };
     if (history.length > 0) draft.context = threadContext(history, scan.playerUid, recipient.alias);
     if (threadKey) draft.threadKey = threadKey;
