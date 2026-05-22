@@ -136,6 +136,8 @@ Voice guidance: ${persona.guidance}
 Hard requirements:
 - Preserve the same intent and any concrete agreement from the plain draft.
 - If thread context is provided, respond to the other player's latest concrete proposal instead of restating a generic desire to trade.
+- Lines labeled "Us" are our previous messages; use them only as background and do not answer or address them.
+- Address only ${draft.recipientAlias}. Do not write as if replying to multiple participants.
 - Do not add tactical claims, threats, promises, alliances, or game actions that are not in the plain draft.
 - Do not mention Star Wars, Star Trek, any franchise, or any named character.
 - Keep it concise: under 140 words.

@@ -468,7 +468,7 @@ function draftDiplomacy(scan: ScanningData, messages: unknown[]): DiplomacyDraft
                 : `${neighbor.alias} is a neighboring empire at ${neighbor.distance.toFixed(2)} ly; draft opens with research disclosure and tech-trade cooperation`,
         };
         if (responding) {
-            draft.context = threadContext(history);
+            draft.context = threadContext(history, scan.playerUid, neighbor.alias);
         }
         if (responding && latestInbound.threadKey) {
             draft.threadKey = latestInbound.threadKey;
@@ -477,11 +477,13 @@ function draftDiplomacy(scan: ScanningData, messages: unknown[]): DiplomacyDraft
     });
 }
 
-function threadContext(history: DiplomacyEvent[]) {
+function threadContext(history: DiplomacyEvent[], myUid: number, theirAlias: string) {
     return history
         .slice(-6)
         .map((event) => {
-            const speaker = event.body ? `P${event.fromUid}` : undefined;
+            const speaker = event.body
+                ? event.fromUid === myUid ? "Us" : theirAlias
+                : undefined;
             return speaker ? `${speaker}: ${event.body}` : undefined;
         })
         .filter((line): line is string => Boolean(line))
@@ -522,20 +524,21 @@ function nearestDistanceBetweenEmpires(ours: Star[], theirs: Star[]) {
 
 function diplomacyHistoryWith(myUid: number, theirUid: number, messages: unknown[]) {
     return messages
-        .flatMap((message) => messageEvents(message))
+        .flatMap((message) => messageEvents(message, myUid, theirUid))
         .filter((event) => event.fromUid === myUid || event.fromUid === theirUid)
         .filter((event) => event.toUids.includes(myUid) || event.toUids.includes(theirUid))
-        .filter((event) => event.toUids.length === 0 || event.toUids.includes(myUid) || event.toUids.includes(theirUid))
+        .filter((event) => event.fromUid !== myUid || event.toUids.includes(theirUid))
+        .filter((event) => event.fromUid !== theirUid || event.toUids.includes(myUid))
         .sort((a, b) => a.created - b.created);
 }
 
-function messageEvents(message: unknown) {
+function messageEvents(message: unknown, myUid: number, theirUid: number) {
     const root = message as DiplomacyMessage;
     const threadKey = messageKey(message);
     const events = [messageEvent(root)]
         .filter((event): event is ReturnType<typeof messageEvent> & { created: number; fromUid: number; toUids: number[] } => Boolean(event));
     for (const comment of root.comments ?? []) {
-        const event = commentEvent(comment, root);
+        const event = commentEvent(comment, myUid, theirUid);
         if (event) events.push(event);
     }
     return events.map((event) => {
@@ -553,11 +556,15 @@ function messageEvent(message: DiplomacyMessage) {
     return diplomacyEvent(created, fromUid, toUids, stringValue(message.payload?.body));
 }
 
-function commentEvent(comment: DiplomacyComment, parent: DiplomacyMessage) {
+function commentEvent(comment: DiplomacyComment, myUid: number, theirUid: number) {
     const created = timestampMs(comment.payload?.created ?? comment.created);
     const fromUid = numeric(comment.payload?.senderUid ?? comment.payload?.from_uid ?? comment.player_uid);
-    const toUids = numericArray(parent.payload?.to_uids);
     if (created === undefined || fromUid === undefined) return undefined;
+    const toUids = fromUid === myUid
+        ? [theirUid]
+        : fromUid === theirUid
+            ? [myUid]
+            : [];
     return diplomacyEvent(created, fromUid, toUids, stringValue(comment.payload?.body));
 }
 
