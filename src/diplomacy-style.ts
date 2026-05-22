@@ -134,11 +134,15 @@ Persona archetype: ${persona.label}
 Voice guidance: ${persona.guidance}
 
 Hard requirements:
-- Preserve the same intent: friendly neighbor outreach, disclose current research, propose mutually profitable tech trading, and invite their research/trade preferences.
+- Preserve the same intent and any concrete agreement from the plain draft.
+- If thread context is provided, respond to the other player's latest concrete proposal instead of restating a generic desire to trade.
 - Do not add tactical claims, threats, promises, alliances, or game actions that are not in the plain draft.
 - Do not mention Star Wars, Star Trek, any franchise, or any named character.
 - Keep it concise: under 140 words.
 - Return only the message body text. No markdown, no subject line, no commentary, no code block.
+
+Thread context, oldest to newest:
+${draft.context ?? "No prior thread context."}
 
 Plain body:
 ${draft.body}`;

@@ -41,6 +41,7 @@ export interface DiplomacyDraft {
     subject: string;
     body: string;
     reason: string;
+    context?: string;
     threadKey?: string;
     persona?: string;
     plainSubject?: string;
@@ -107,6 +108,7 @@ interface DiplomacyEvent {
     fromUid: number;
     toUids: number[];
     threadKey?: string;
+    body?: string;
 }
 
 const TECH = {
@@ -374,6 +376,16 @@ function assignCarrierCoverage(scan: ScanningData, stars: MutableStar[], fleets:
         .filter((fleet) => fleet.o.length === 0 && fleet.st > 0 && Boolean(fleet.ouid))
         .sort((a, b) => b.st - a.st || a.uid - b.uid);
     const neutralTargets = reachableNeutralTargets(scan, stars, range, speed, ticksUntilProduction);
+    for (const fleet of fleets) {
+        const targetUid = fleet.o[0]?.[1];
+        const target = targetUid === undefined ? undefined : scan.stars[String(targetUid)];
+        if (!target || !isNeutralStar(target)) continue;
+        const fleetSpeed = Math.max(fleet.speed || scan.fleetSpeed, 0.0001);
+        const eta = etaTicks(starDistance(fleet, target), fleetSpeed);
+        if (eta <= ticksUntilProduction) {
+            assignedTargets.add(target.uid);
+        }
+    }
 
     for (const fleet of idleFleets) {
         const target = nearestReachableNeutralForFleet(scan, fleet, neutralTargets, assignedTargets, range, ticksUntilProduction);
@@ -441,6 +453,7 @@ function draftDiplomacy(scan: ScanningData, messages: unknown[]): DiplomacyDraft
             return [];
         }
         const research = techName(player.researching);
+        const latestInboundBody = responding ? latestInbound.body : undefined;
 
         const draft: DiplomacyDraft = {
             recipientUid: neighbor.uid,
@@ -449,16 +462,30 @@ function draftDiplomacy(scan: ScanningData, messages: unknown[]): DiplomacyDraft
             fromColor: playerColorStyle(player.color),
             friendly,
             subject: responding ? "Re: tech cooperation" : "Tech trading",
-            body: diplomacyBody(player.alias, neighbor.alias, research, responding),
+            body: diplomacyBody(player.alias, neighbor.alias, research, responding, latestInboundBody),
             reason: responding
                 ? `${neighbor.alias} replied within 8h; draft keeps the tech-trade conversation moving`
                 : `${neighbor.alias} is a neighboring empire at ${neighbor.distance.toFixed(2)} ly; draft opens with research disclosure and tech-trade cooperation`,
         };
+        if (responding) {
+            draft.context = threadContext(history);
+        }
         if (responding && latestInbound.threadKey) {
             draft.threadKey = latestInbound.threadKey;
         }
         return [draft];
     });
+}
+
+function threadContext(history: DiplomacyEvent[]) {
+    return history
+        .slice(-6)
+        .map((event) => {
+            const speaker = event.body ? `P${event.fromUid}` : undefined;
+            return speaker ? `${speaker}: ${event.body}` : undefined;
+        })
+        .filter((line): line is string => Boolean(line))
+        .join("\n\n");
 }
 
 function playerColorStyle(color: number) {
@@ -523,7 +550,7 @@ function messageEvent(message: DiplomacyMessage) {
     const fromUid = numeric(message.payload?.from_uid ?? message.player_uid);
     const toUids = numericArray(message.payload?.to_uids);
     if (created === undefined || fromUid === undefined) return undefined;
-    return { created, fromUid, toUids };
+    return diplomacyEvent(created, fromUid, toUids, stringValue(message.payload?.body));
 }
 
 function commentEvent(comment: DiplomacyComment, parent: DiplomacyMessage) {
@@ -531,7 +558,13 @@ function commentEvent(comment: DiplomacyComment, parent: DiplomacyMessage) {
     const fromUid = numeric(comment.payload?.senderUid ?? comment.payload?.from_uid ?? comment.player_uid);
     const toUids = numericArray(parent.payload?.to_uids);
     if (created === undefined || fromUid === undefined) return undefined;
-    return { created, fromUid, toUids };
+    return diplomacyEvent(created, fromUid, toUids, stringValue(comment.payload?.body));
+}
+
+function diplomacyEvent(created: number, fromUid: number, toUids: number[], body?: string): DiplomacyEvent {
+    const event: DiplomacyEvent = { created, fromUid, toUids };
+    if (body) event.body = body;
+    return event;
 }
 
 function hasFastReply(myUid: number, theirUid: number, history: DiplomacyEvent[]) {
@@ -548,7 +581,22 @@ function latestMessageFrom(uid: number, history: DiplomacyEvent[]) {
     return [...history].reverse().find((event) => event.fromUid === uid);
 }
 
-function diplomacyBody(myAlias: string, theirAlias: string, research: string, responding: boolean) {
+function diplomacyBody(myAlias: string, theirAlias: string, research: string, responding: boolean, latestInboundBody?: string) {
+    if (responding && latestInboundBody) {
+        const wantsManufacturing = /manufacturing/i.test(latestInboundBody);
+        const asksWeapons = /weapons/i.test(latestInboundBody);
+        const specifics = wantsManufacturing || asksWeapons
+            ? "Your proposal makes sense: you focus Manufacturing, I will continue Weapons, and we can exchange when each completes."
+            : "Your proposal makes sense; we can coordinate research paths and exchange finished techs when they are ready.";
+        return [
+            `Hi ${theirAlias}, thanks for the quick reply.`,
+            specifics,
+            `I am currently researching ${research}, so I will keep that on track.`,
+            "Please send Manufacturing when it completes, and I will reciprocate with Weapons as soon as it is available.",
+            `- ${myAlias}`,
+        ].join("\n\n");
+    }
+
     const opener = responding
         ? `Hi ${theirAlias}, thanks for the quick reply.`
         : `Hi ${theirAlias}, it looks like we are going to be neighbors.`;
@@ -603,6 +651,10 @@ function numericArray(value: unknown) {
         return value.split(",").map(numeric).filter((entry): entry is number => entry !== undefined);
     }
     return [];
+}
+
+function stringValue(value: unknown) {
+    return typeof value === "string" ? value : undefined;
 }
 
 function messageKey(message: unknown) {
