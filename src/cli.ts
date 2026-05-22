@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import {
     activeGamesFromReport,
@@ -14,7 +15,7 @@ import {
     type AccountGame,
 } from "./client.js";
 import { runTurn, type TurnConfig } from "./run-turn.js";
-import { planTurn } from "./planner.js";
+import { planTurn, type DecisionRecord } from "./planner.js";
 import { flavorDiplomacyDrafts } from "./diplomacy-style.js";
 
 interface CliArgs {
@@ -25,6 +26,7 @@ interface CliArgs {
     submit: boolean;
     markReady: boolean;
     buildCarrier: boolean;
+    json: boolean;
     horizonTicks?: number;
 }
 
@@ -71,7 +73,15 @@ async function main() {
     if (args.scanFile) config.scanFile = args.scanFile;
 
     const result = await runTurn(config);
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    if (args.json) {
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    } else {
+        printMarkdown(renderTurnSummaries([{
+            game: { id: gameId ?? "scan-file", name: result.decision.metadata.gameName },
+            decision: result.decision,
+            submission: result.submission,
+        }]));
+    }
 }
 
 function loadDotEnv(path = ".env") {
@@ -159,7 +169,134 @@ async function runDiscoveredTurns(account: AccountConfig, args: CliArgs, baseUrl
             },
         });
     }
-    process.stdout.write(`${JSON.stringify({ activeGameCount: games.length, results }, null, 2)}\n`);
+    if (args.json) {
+        process.stdout.write(`${JSON.stringify({ activeGameCount: games.length, results }, null, 2)}\n`);
+    } else {
+        printMarkdown(renderTurnSummaries(results));
+    }
+}
+
+interface TurnSummaryInput {
+    game?: {
+        id?: string;
+        name?: unknown;
+        status?: unknown;
+    };
+    decision: DecisionRecord;
+    submission: {
+        submitted: boolean;
+    };
+}
+
+function renderTurnSummaries(results: TurnSummaryInput[]) {
+    if (results.length === 0) {
+        return "# AIB Turn Summary\n\nNo active games found.\n";
+    }
+
+    return [
+        "# AIB Turn Summary",
+        "",
+        ...results.flatMap((result) => renderTurnSummary(result)),
+    ].join("\n");
+}
+
+function renderTurnSummary(result: TurnSummaryInput) {
+    const decision = result.decision;
+    const title = stringValue(result.game?.name) ?? decision.metadata.gameName ?? "Unknown game";
+    const gameId = result.game?.id ? ` (${result.game.id})` : "";
+    const mode = decision.metadata.dryRun ? "dry run" : "submit";
+    const lines = [
+        `## ${title}${gameId}`,
+        "",
+        `Tick ${decision.metadata.tick} | ${mode} | cash $${decision.summary.cashStart} -> $${decision.summary.cashRemaining}`,
+        "",
+        `Planned ${decision.summary.commandsPlanned} orders, ${decision.summary.diplomacyDraftsPlanned} diplomacy drafts, ${decision.summary.techTransfersPlanned} tech transfers.`,
+        "",
+        ...renderCommands(decision),
+        ...renderDiplomacy(decision),
+        ...renderCombat(decision),
+        ...renderRejected(decision),
+        result.submission.submitted ? "**Submitted:** yes" : "**Submitted:** no",
+        "",
+    ];
+    return lines;
+}
+
+function renderCommands(decision: DecisionRecord) {
+    if (decision.commands.length === 0) {
+        return ["### Orders", "", "No orders planned.", ""];
+    }
+    return [
+        "### Orders",
+        "",
+        ...decision.commands.map((command) => [
+            `- \`${command.order}\``,
+            `  ${command.reason}`,
+            command.followUpReason ? `  Follow-up: ${command.followUpReason}` : undefined,
+        ].filter((line): line is string => Boolean(line)).join("\n")),
+        "",
+    ];
+}
+
+function renderDiplomacy(decision: DecisionRecord) {
+    if (decision.diplomacyDrafts.length === 0) {
+        return ["### Diplomacy", "", "No diplomacy drafts.", ""];
+    }
+    return [
+        "### Diplomacy",
+        "",
+        ...decision.diplomacyDrafts.map((draft) => [
+            `- ${draft.threadKey ? "Reply" : "New thread"} to **${draft.recipientAlias}**: ${draft.subject}`,
+            `  ${draft.reason}`,
+        ].join("\n")),
+        "",
+    ];
+}
+
+function renderCombat(decision: DecisionRecord) {
+    const attacks = decision.combat.incomingAttacks;
+    const planned = [...decision.combat.plannedDefenses, ...decision.combat.plannedAttacks];
+    if (attacks.length === 0 && planned.length === 0 && !decision.combat.rally) return [];
+
+    const lines = ["### Combat", ""];
+    for (const attack of attacks.slice(0, 8)) {
+        const outcome = attack.attackerWins
+            ? `would lose without ${attack.additionalDefendersNeeded} more defenders`
+            : "currently holds";
+        lines.push(`- Incoming ${attack.attackerAlias} fleet ${attack.fleetUid} to ${attack.targetName} in ${attack.eta} ticks: ${outcome}.`);
+    }
+    for (const route of planned.slice(0, 8)) {
+        lines.push(`- Planned carrier ${route.fleetUid} to ${route.targetName}: ${route.reason}`);
+    }
+    if (decision.combat.rally) {
+        lines.push(`- Rally at ${decision.combat.rally.starName}: ${decision.combat.rally.availableShips}/${decision.combat.rally.requiredShips} ships for ${decision.combat.rally.coveredTargetNames.join(", ")}.`);
+    }
+    lines.push("");
+    return lines;
+}
+
+function renderRejected(decision: DecisionRecord) {
+    const interesting = decision.rejected
+        .filter((entry) => /optimizer|carrier budget|staging|incoming|attacking|loses|holds|skipped|blocked/i.test(entry))
+        .slice(0, 10);
+    if (interesting.length === 0) return [];
+    return [
+        "### Notes",
+        "",
+        ...interesting.map((entry) => `- ${entry}`),
+        "",
+    ];
+}
+
+function printMarkdown(markdown: string) {
+    const glow = spawnSync("glow", ["-"], {
+        input: markdown,
+        encoding: "utf8",
+        stdio: ["pipe", "inherit", "inherit"],
+    });
+    if (glow.error || glow.status !== 0) {
+        process.stdout.write(`${markdown.trimEnd()}\n`);
+    }
 }
 
 function geminiConfig(gameId?: string) {
@@ -199,6 +336,7 @@ function parseArgs(argv: string[]): CliArgs {
         submit: process.env.AIB_SUBMIT === "1",
         markReady: process.env.AIB_MARK_READY === "1",
         buildCarrier: process.env.AIB_BUILD_CARRIER !== "0",
+        json: process.env.AIB_JSON === "1",
     };
 
     for (let i = 0; i < argv.length; i += 1) {
@@ -210,6 +348,7 @@ function parseArgs(argv: string[]): CliArgs {
         else if (arg === "--submit") args.submit = true;
         else if (arg === "--ready") args.markReady = true;
         else if (arg === "--no-build-carrier") args.buildCarrier = false;
+        else if (arg === "--json") args.json = true;
         else if (arg === "--horizon") args.horizonTicks = Number(requireValue(argv, ++i, arg));
         else if (arg === "--help") {
             printHelp();
@@ -234,6 +373,10 @@ function numberFromEnv(name: string, fallback: number) {
     return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function stringValue(value: unknown) {
+    return typeof value === "string" ? value : undefined;
+}
+
 function printHelp() {
     process.stdout.write(`Usage:
   npx ts-node src/cli.ts --game GAME_ID --key API_KEY
@@ -244,6 +387,7 @@ Options:
   --ready              Include force_ready for turn-based games.
   --no-build-carrier   Disable one-carrier build heuristic.
   --horizon TICKS      Planning horizon for optimization. Defaults to 30.
+  --json               Print the full raw JSON result instead of a concise Markdown summary.
   --base-url URL       Defaults to NP_BASE_URL or https://np4.ironhelmet.com.
 `);
 }

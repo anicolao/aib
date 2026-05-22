@@ -35,8 +35,12 @@ The same core should be callable from:
 - a future Google Cloud Functions scheduled handler
 
 The CLI and the initial `scheduledTurn` handler both call the shared
-`runTurn` core. The CLI prints the same JSON record the cloud function logs or
-returns.
+`runTurn` core. The cloud function returns the full JSON record. The CLI prints
+a concise Markdown turn summary by default, including planned orders, rationales,
+diplomacy drafts, combat notes, and whether submission happened. If `glow` is
+installed locally, the CLI renders the Markdown through `glow`; otherwise it
+prints plain Markdown. Use `--json` when the full raw decision record is needed
+for scripts or debugging.
 
 ## Authentication
 
