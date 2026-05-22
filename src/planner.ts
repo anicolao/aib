@@ -1273,6 +1273,12 @@ function draftDiplomacy(scan: ScanningData, messages: unknown[], suppressedRecip
         }
         const research = techName(player.researching);
         const latestInboundBody = responding ? latestInbound.body : undefined;
+        const reply = responding
+            ? techDiplomacyReply(scan.playerUid, player.alias, neighbor.alias, player.researching, history, latestInboundBody)
+            : undefined;
+        if (responding && !reply) {
+            return [];
+        }
 
         const draft: DiplomacyDraft = {
             recipientUid: neighbor.uid,
@@ -1281,9 +1287,9 @@ function draftDiplomacy(scan: ScanningData, messages: unknown[], suppressedRecip
             fromColor: playerColorStyle(player.color),
             friendly,
             subject: responding ? "Re: tech cooperation" : "Tech trading",
-            body: diplomacyBody(player.alias, neighbor.alias, research, responding, latestInboundBody),
+            body: reply?.body ?? diplomacyBody(player.alias, neighbor.alias, research),
             reason: responding
-                ? `${neighbor.alias} replied within 8h; draft keeps the tech-trade conversation moving`
+                ? reply?.reason ?? `${neighbor.alias} replied within 8h; draft keeps the tech-trade conversation moving`
                 : `${neighbor.alias} is a neighboring empire at ${neighbor.distance.toFixed(2)} ly; draft opens with research disclosure and tech-trade cooperation`,
         };
         if (responding) {
@@ -1472,32 +1478,51 @@ function latestMessageFrom(uid: number, history: DiplomacyEvent[]) {
     return [...history].reverse().find((event) => event.fromUid === uid);
 }
 
-function diplomacyBody(myAlias: string, theirAlias: string, research: string, responding: boolean, latestInboundBody?: string) {
-    if (responding && latestInboundBody) {
-        const wantsManufacturing = /manufacturing/i.test(latestInboundBody);
-        const asksWeapons = /weapons/i.test(latestInboundBody);
-        if (wantsManufacturing && asksWeapons) {
-            return [
-                `Hi ${npLink(theirAlias)}, thanks for the quick reply.`,
-                "Your proposal makes sense: you focus Manufacturing, I will continue Weapons, and we can exchange when each completes.",
-                `I am currently researching ${research}, so I will keep that on track.`,
-                "Please send Manufacturing when it completes, and I will reciprocate with Weapons as soon as it is available.",
-                `- ${npLink(myAlias)}`,
-            ].join("\n\n");
-        }
+function techDiplomacyReply(
+    myUid: number,
+    myAlias: string,
+    theirAlias: string,
+    researchKind: number,
+    history: DiplomacyEvent[],
+    latestInboundBody?: string,
+) {
+    if (!latestInboundBody) return undefined;
 
-        return [
-            `Hi ${npLink(theirAlias)}, thanks for reaching out.`,
-            "Your proposal makes sense; we can coordinate research paths and exchange finished techs when they are ready.",
-            `I am currently researching ${research}.`,
-            "Let me know which tech you would like to trade for, and what you plan to research next.",
-            `- ${npLink(myAlias)}`,
-        ].join("\n\n");
+    const previousOutbound = latestMessageFrom(myUid, history);
+    const inboundTechs = explicitTechKinds(latestInboundBody);
+    const tradePartnerTech = inboundTechs.find((kind) => kind !== researchKind);
+    const priorOutboundBody = previousOutbound?.body ?? "";
+    const outboundTechs = explicitTechKinds(priorOutboundBody);
+    const alreadyConfirmed = tradePartnerTech !== undefined
+        && outboundTechs.includes(researchKind)
+        && outboundTechs.includes(tradePartnerTech)
+        && /trade|exchange|send|reciprocate|line up|works/i.test(priorOutboundBody);
+
+    if (alreadyConfirmed && isRoutineTradeContinuation(latestInboundBody)) {
+        return undefined;
     }
 
-    const opener = responding
-        ? `Hi ${npLink(theirAlias)}, thanks for the quick reply.`
-        : `Hi ${npLink(theirAlias)}, it looks like we are going to be neighbors.`;
+    if (tradePartnerTech !== undefined) {
+        return {
+            body: [
+                `Hi ${npLink(theirAlias)}, that works for me.`,
+                `Let's line up ${techName(researchKind)} from me for ${techName(tradePartnerTech)} from you when each completes.`,
+                "If either research path changes, let me know before sending so we keep the exchange even.",
+                `- ${npLink(myAlias)}`,
+            ].join("\n\n"),
+            reason: `${theirAlias} named ${techName(tradePartnerTech)}; draft confirms a concrete ${techName(researchKind)} for ${techName(tradePartnerTech)} trade`,
+        };
+    }
+
+    if (isRoutineTradeContinuation(latestInboundBody)) {
+        return undefined;
+    }
+
+    return undefined;
+}
+
+function diplomacyBody(myAlias: string, theirAlias: string, research: string) {
+    const opener = `Hi ${npLink(theirAlias)}, it looks like we are going to be neighbors.`;
     return [
         opener,
         `I am currently researching ${research}.`,
@@ -1535,6 +1560,28 @@ function techKindValue(value: unknown) {
         }
     }
     return undefined;
+}
+
+function explicitTechKinds(text: string) {
+    const normalized = text.toLowerCase();
+    const kinds: number[] = [];
+    const patterns: Array<[number, RegExp]> = [
+        [TECH.BANKING, /\bbanking\b/],
+        [TECH.RESEARCH, /\bexperimentation\b/],
+        [TECH.MANUFACTURING, /\bmanufacturing\b/],
+        [TECH.PROPULSION, /\bpropulsion\b/],
+        [TECH.SCANNING, /\bscanning\b/],
+        [TECH.WEAPONS, /\bweapons?\b/],
+        [TECH.TERRAFORMING, /\bterraforming\b/],
+    ];
+    for (const [kind, pattern] of patterns) {
+        if (pattern.test(normalized)) kinds.push(kind);
+    }
+    return kinds;
+}
+
+function isRoutineTradeContinuation(text: string) {
+    return /trade|exchange|coordinate|cooperate|shared progress|mutual interests|which .*tech|what .*research|path of discovery|technological/i.test(text);
 }
 
 function techAliases(): Array<[number, string[]]> {
