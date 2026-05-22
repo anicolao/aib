@@ -1,6 +1,6 @@
 import type { Fleet, GameConfig, Player, ScannedStar, ScanningData, Star, TechInfo } from "./types.js";
 import type { PlannedCommand } from "./command.js";
-import { estimateStarBattle, projectedStarShips, type BattleEstimate } from "./battle.js";
+import { estimateBattle, estimateStarBattle, projectedStarShips, type BattleEstimate } from "./battle.js";
 
 export interface PlannerConfig {
     horizonTicks: number;
@@ -106,6 +106,22 @@ interface NewCarrierAssignment {
 interface CarrierExecution {
     cash: number;
     builtCount: number;
+}
+
+interface DefensiveCarrierAssignment {
+    mode: "defend" | "counterattack";
+    source: MutableStar;
+    target: MutableStar;
+    attack: IncomingAttack;
+    ships: number;
+    eta: number;
+    cost: number;
+}
+
+interface DefensiveCarrierPlan {
+    assignments: DefensiveCarrierAssignment[];
+    buildCount: number;
+    buildCost: number;
 }
 
 interface StagingAssignment {
@@ -314,21 +330,24 @@ export function planTurn(
     const tacticalPlan = planTactics(scan, stars, ownFleets, config, rejected);
     const tacticalFleetUids = new Set(tacticalPlan.assignments.map((assignment) => assignment.fleet.uid));
     const techTransferPlan = planTechTransfers(scan, diplomacyMessages, gameEvents, tacticalPlan);
+    const defensiveCarrierPlan = config.buildCarrier
+        ? planDefensiveCarrierBuilds(scan, stars, tacticalPlan, safeNumber(player.cash, 0), techTransferPlan.reserveCost, 0, config.horizonTicks, rejected)
+        : { assignments: [], buildCount: 0, buildCost: 0 };
     const mandatoryReserve = Math.max(
         Math.floor(safeNumber(player.cash, 0) * config.cashReserveRatio),
-        techTransferPlan.reserveCost,
+        techTransferPlan.reserveCost + defensiveCarrierPlan.buildCost,
     );
     const carrierBudget = config.buildCarrier
         ? logisticsBudget(scan, player, stars, safeNumber(player.cash, 0), mandatoryReserve, config)
         : 0;
     const carrierPlan = config.buildCarrier
-        ? planCarrierCoverage(scan, stars, ownFleets, tacticalFleetUids, carrierBudget, config.horizonTicks, rejected)
+        ? planCarrierCoverage(scan, stars, ownFleets, tacticalFleetUids, carrierBudget, config.horizonTicks, defensiveCarrierPlan.buildCount, rejected)
         : { buildCount: 0, buildCost: 0, budget: 0 };
 
     let cash = safeNumber(player.cash, 0);
     const reserve = Math.max(
         mandatoryReserve,
-        carrierPlan.buildCost + techTransferPlan.reserveCost,
+        defensiveCarrierPlan.buildCost + carrierPlan.buildCost + techTransferPlan.reserveCost,
     );
     cash = buyInfrastructure(scan, player, stars, cash, reserve, config, commands, rejected);
 
@@ -339,7 +358,10 @@ export function planTurn(
 
     let builtCarriersThisTurn = 0;
     if (config.buildCarrier) {
-        const carrierExecution = executeCarrierCoverage(scan, stars, ownFleets, tacticalFleetUids, cash, carrierPlan.budget, config.horizonTicks, commands, rejected);
+        const defenseExecution = executeDefensiveCarrierBuilds(defensiveCarrierPlan, cash, commands, rejected);
+        cash = defenseExecution.cash;
+        builtCarriersThisTurn += defenseExecution.builtCount;
+        const carrierExecution = executeCarrierCoverage(scan, stars, ownFleets, tacticalFleetUids, cash, carrierPlan.budget, config.horizonTicks, builtCarriersThisTurn, commands, rejected);
         cash = carrierExecution.cash;
         builtCarriersThisTurn += carrierExecution.builtCount;
         const stagingExecution = executeShipStaging(scan, stars, cash, builtCarriersThisTurn, carrierPlan.budget - carrierExecution.spent, commands, rejected);
@@ -964,12 +986,13 @@ function planCarrierCoverage(
     unavailableFleetUids: Set<number>,
     budget: number,
     horizonTicks: number,
+    builtCarriersThisTurn: number,
     rejected: string[],
 ): CarrierPlan {
-    const { newCarrierAssignments } = assignCarrierCoverage(scan, stars, fleets, unavailableFleetUids, budget, horizonTicks, rejected);
+    const { newCarrierAssignments } = assignCarrierCoverage(scan, stars, fleets, unavailableFleetUids, budget, horizonTicks, builtCarriersThisTurn, rejected);
     return {
         buildCount: newCarrierAssignments.length,
-        buildCost: newCarrierAssignments.reduce((total, _assignment, index) => total + carrierCostFor(scan.config, index), 0),
+        buildCost: newCarrierAssignments.reduce((total, _assignment, index) => total + carrierCostFor(scan.config, builtCarriersThisTurn + index), 0),
         budget,
     };
 }
@@ -982,11 +1005,12 @@ function executeCarrierCoverage(
     cashStart: number,
     budget: number,
     horizonTicks: number,
+    builtCarriersThisTurn: number,
     commands: PlannedCommand[],
     rejected: string[],
 ) {
     let cash = cashStart;
-    const { fleetAssignments, newCarrierAssignments, uncoveredNeutralTargets } = assignCarrierCoverage(scan, stars, fleets, unavailableFleetUids, budget, horizonTicks, rejected);
+    const { fleetAssignments, newCarrierAssignments, uncoveredNeutralTargets } = assignCarrierCoverage(scan, stars, fleets, unavailableFleetUids, budget, horizonTicks, builtCarriersThisTurn, rejected);
 
     for (const assignment of fleetAssignments) {
         commands.push({
@@ -999,7 +1023,7 @@ function executeCarrierCoverage(
     let built = 0;
     let spent = 0;
     for (const assignment of newCarrierAssignments) {
-        const cost = carrierCostFor(scan.config, built);
+        const cost = carrierCostFor(scan.config, builtCarriersThisTurn + built);
         if (spent + cost > budget) {
             rejected.push(`carrier budget $${budget} blocked carrier for ${assignment.target.n}; would spend $${spent + cost}`);
             continue;
@@ -1031,6 +1055,206 @@ function executeCarrierCoverage(
     }
 
     return { cash, builtCount: built, spent };
+}
+
+function planDefensiveCarrierBuilds(
+    scan: ScanningData,
+    stars: MutableStar[],
+    tacticalPlan: TacticalPlan,
+    cashAvailable: number,
+    reservedCash: number,
+    builtCarriersThisTurn: number,
+    horizonTicks: number,
+    rejected: string[],
+): DefensiveCarrierPlan {
+    const assignments: DefensiveCarrierAssignment[] = [];
+    const sourceShips = new Map(stars.map((star) => [star.uid, Math.max(0, star.st - 1)]));
+    const alreadyDefendedTargets = new Set(tacticalPlan.defenseAssignments.map((assignment) => assignment.target.uid));
+    let buildCost = 0;
+
+    for (const attack of tacticalPlan.incomingAttacks.filter((entry) => entry.estimate.attackerWins)) {
+        if (alreadyDefendedTargets.has(attack.target.uid)) continue;
+        const cost = carrierCostFor(scan.config, builtCarriersThisTurn + assignments.length);
+        if (reservedCash + buildCost + cost > cashAvailable) {
+            rejected.push(`cannot build defensive carrier for ${attack.target.n}; $${cashAvailable} cash cannot cover reserved $${reservedCash + buildCost} plus carrier cost $${cost}`);
+            continue;
+        }
+        const assignment = bestDefensiveCarrierBuild(scan, stars, sourceShips, attack, cost)
+            ?? bestDefensiveCounterattackCarrierBuild(scan, stars, sourceShips, attack, cost, horizonTicks);
+        if (!assignment) {
+            rejected.push(`no owned star can build a defensive carrier to ${attack.target.n} before ${attack.attacker.alias} fleet ${attack.fleet.uid} arrives; ${defensiveCarrierSourceSummary(scan, stars, sourceShips, attack)}`);
+            continue;
+        }
+        sourceShips.set(assignment.source.uid, (sourceShips.get(assignment.source.uid) ?? 0) - assignment.ships);
+        assignments.push(assignment);
+        buildCost += cost;
+        alreadyDefendedTargets.add(attack.target.uid);
+    }
+
+    return { assignments, buildCount: assignments.length, buildCost };
+}
+
+function defensiveCarrierSourceSummary(
+    scan: ScanningData,
+    stars: MutableStar[],
+    sourceShips: Map<number, number>,
+    attack: IncomingAttack,
+) {
+    const range = rangeValue(scan.players[String(scan.playerUid)]);
+    const candidates = stars
+        .filter((source) => source.uid !== attack.target.uid)
+        .map((source) => {
+            const distance = starDistance(source, attack.target);
+            const eta = etaTicks(distance, Math.max(scan.fleetSpeed, 0.0001));
+            const availableShips = Math.max(0, sourceShips.get(source.uid) ?? 0);
+            const ships = requiredDefensiveCarrierShips(scan, attack, availableShips);
+            return `${source.n}: eta ${eta.toFixed(1)}, dist ${distance.toFixed(2)}/${range.toFixed(2)}, ships ${availableShips}, required ${ships ?? "unavailable"}`;
+        })
+        .slice(0, 5);
+    return candidates.length > 0 ? candidates.join("; ") : "no owned source stars";
+}
+
+function bestDefensiveCarrierBuild(
+    scan: ScanningData,
+    stars: MutableStar[],
+    sourceShips: Map<number, number>,
+    attack: IncomingAttack,
+    cost: number,
+): DefensiveCarrierAssignment | undefined {
+    const range = rangeValue(scan.players[String(scan.playerUid)]);
+    return stars
+        .filter((source) => source.uid !== attack.target.uid)
+        .map((source) => {
+            const distance = starDistance(source, attack.target);
+            const eta = etaTicks(distance, Math.max(scan.fleetSpeed, 0.0001));
+            const availableShips = Math.max(0, sourceShips.get(source.uid) ?? 0);
+            const ships = requiredDefensiveCarrierShips(scan, attack, availableShips);
+            return { source, distance, eta, availableShips, ships };
+        })
+        .filter((candidate) => candidate.distance <= range
+            && candidate.eta < attack.eta
+            && candidate.ships !== undefined
+            && candidate.ships <= candidate.availableShips)
+        .sort((a, b) => (a.ships ?? Number.POSITIVE_INFINITY) - (b.ships ?? Number.POSITIVE_INFINITY)
+            || a.eta - b.eta
+            || b.availableShips - a.availableShips
+            || a.source.uid - b.source.uid)
+        .map((candidate) => ({
+            mode: "defend" as const,
+            source: candidate.source,
+            target: attack.target,
+            attack,
+            ships: candidate.ships ?? 0,
+            eta: candidate.eta,
+            cost,
+        }))[0];
+}
+
+function bestDefensiveCounterattackCarrierBuild(
+    scan: ScanningData,
+    stars: MutableStar[],
+    sourceShips: Map<number, number>,
+    attack: IncomingAttack,
+    cost: number,
+    horizonTicks: number,
+): DefensiveCarrierAssignment | undefined {
+    const range = rangeValue(scan.players[String(scan.playerUid)]);
+    return stars
+        .filter((source) => source.uid !== attack.target.uid)
+        .map((source) => {
+            const distance = starDistance(source, attack.target);
+            const eta = etaTicks(distance, Math.max(scan.fleetSpeed, 0.0001));
+            const availableShips = Math.max(0, sourceShips.get(source.uid) ?? 0);
+            const ships = requiredCounterattackCarrierShips(scan, attack, availableShips);
+            return { source, distance, eta, availableShips, ships };
+        })
+        .filter((candidate) => candidate.distance <= range
+            && candidate.eta >= attack.eta
+            && candidate.eta <= horizonTicks
+            && candidate.ships !== undefined
+            && candidate.ships <= candidate.availableShips)
+        .sort((a, b) => a.eta - b.eta
+            || (a.ships ?? Number.POSITIVE_INFINITY) - (b.ships ?? Number.POSITIVE_INFINITY)
+            || b.availableShips - a.availableShips
+            || a.source.uid - b.source.uid)
+        .map((candidate) => ({
+            mode: "counterattack" as const,
+            source: candidate.source,
+            target: attack.target,
+            attack,
+            ships: candidate.ships ?? 0,
+            eta: candidate.eta,
+            cost,
+        }))[0];
+}
+
+function requiredDefensiveCarrierShips(scan: ScanningData, attack: IncomingAttack, availableShips: number) {
+    const baseDefenders = orbitingShipsAt(scan, attack.target.uid, attack.target.puid, attack.eta);
+    for (let ships = Math.max(1, attack.estimate.additionalDefendersNeeded); ships <= availableShips; ships += 1) {
+        const estimate = estimateStarBattle(
+            scan,
+            attack.fleet.puid,
+            attack.estimate.attackerShips,
+            attack.target,
+            attack.eta,
+            baseDefenders + ships,
+        );
+        if (!estimate.attackerWins) {
+            return ships;
+        }
+    }
+    return undefined;
+}
+
+function requiredCounterattackCarrierShips(scan: ScanningData, attack: IncomingAttack, availableShips: number) {
+    const player = scan.players[String(scan.playerUid)];
+    const attacker = scan.players[String(attack.attacker.uid)];
+    if (!player || !attacker) return undefined;
+    const occupyingShips = Math.max(1, attack.estimate.attackerRemaining);
+    for (let ships = 1; ships <= availableShips; ships += 1) {
+        const estimate = estimateBattle({
+            attackerUid: scan.playerUid,
+            defenderUid: attack.attacker.uid,
+            attackerShips: ships,
+            defenderShips: occupyingShips,
+            attackerWeapons: weaponsValue(player),
+            defenderWeapons: weaponsValue(attacker),
+        });
+        if (estimate.attackerWins) {
+            return ships;
+        }
+    }
+    return undefined;
+}
+
+function executeDefensiveCarrierBuilds(
+    plan: DefensiveCarrierPlan,
+    cashStart: number,
+    commands: PlannedCommand[],
+    rejected: string[],
+) {
+    let cash = cashStart;
+    let builtCount = 0;
+    for (const assignment of plan.assignments) {
+        if (cash < assignment.cost) {
+            rejected.push(`not enough cash to build defensive carrier from ${assignment.source.n} to ${assignment.target.n}: $${cash} < $${assignment.cost}`);
+            continue;
+        }
+        cash -= assignment.cost;
+        builtCount += 1;
+        assignment.source.st -= assignment.ships;
+        const action = assignment.mode === "defend"
+            ? `defensive carrier at ${assignment.source.n} with ${assignment.ships} ships for ${assignment.target.n}; eta ${assignment.eta.toFixed(1)} before ${assignment.attack.attacker.alias} fleet ${assignment.attack.fleet.uid} eta ${assignment.attack.eta.toFixed(1)}`
+            : `counterattack carrier at ${assignment.source.n} with ${assignment.ships} ships for ${assignment.target.n}; eta ${assignment.eta.toFixed(1)} after ${assignment.attack.attacker.alias} fleet ${assignment.attack.fleet.uid} eta ${assignment.attack.eta.toFixed(1)}`;
+        commands.push({
+            kind: "new_fleet",
+            order: `new_fleet,${assignment.source.uid},${assignment.ships}`,
+            reason: `build ${action}`,
+            followUpTargetUid: assignment.target.uid,
+            followUpReason: `route ${assignment.mode} carrier to ${assignment.target.n}`,
+        });
+    }
+    return { cash, builtCount };
 }
 
 function executeShipStaging(
@@ -1084,6 +1308,7 @@ function assignCarrierCoverage(
     unavailableFleetUids: Set<number>,
     budget: number,
     horizonTicks: number,
+    builtCarriersThisTurn: number,
     rejected: string[],
 ) {
     const expansionHorizonTicks = Math.max(1, horizonTicks);
@@ -1118,7 +1343,7 @@ function assignCarrierCoverage(
     let plannedSpend = 0;
     for (const target of neutralTargets) {
         if (assignedTargets.has(target.star.uid)) continue;
-        const nextCost = carrierCostFor(scan.config, newCarrierAssignments.length);
+        const nextCost = carrierCostFor(scan.config, builtCarriersThisTurn + newCarrierAssignments.length);
         if (plannedSpend + nextCost > budget) {
             rejected.push(`neutral ${target.star.n} is reachable but skipped by carrier budget $${budget}; next carrier costs $${nextCost}`);
             continue;

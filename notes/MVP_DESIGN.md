@@ -120,6 +120,12 @@ the frontier":
   counter as a ship-production batch
 - search visible defensive carrier groups and route the smallest sufficient set
   that flips a losing battle with a weapons-based safety margin
+- when no existing carrier can defend in time, reserve cash to build a defensive
+  carrier from an owned star that can arrive before the attack and carry enough
+  ships to survive the battle
+- when an in-time defense is impossible, build a counterattack carrier if one
+  can arrive within the planning horizon and retake the star from the projected
+  surviving attackers
 - choose a rally star that can reach threatened stars before likely enemy
   arrivals, and mass existing carrier strength there when one star can cover
   multiple threats; reject infeasible rally plans that cannot gather enough

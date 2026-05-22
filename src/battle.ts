@@ -19,7 +19,7 @@ export interface BattleEstimate {
     additionalDefendersNeeded: number;
 }
 
-interface Combatants {
+export interface Combatants {
     attackerUid: number;
     defenderUid: number;
     attackerShips: number;
