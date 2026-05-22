@@ -159,22 +159,22 @@ export async function submitCommands(
     const responses: unknown[] = [];
 
     if (batchedOrders.length > 0) {
-        responses.push(await gamePost(config, "batched_orders", {
+        responses.push(summarizeGameResponse(await gamePost(config, "batched_orders", {
             order: batchedOrders.join("/"),
-        }, sessionCookie));
+        }, sessionCookie)));
     }
 
     for (const command of commands.filter((command) => command.kind !== "batched_order")) {
         const response = await gamePost(config, "order", { order: command.order }, sessionCookie);
-        responses.push(response);
+        responses.push(summarizeGameResponse(response));
         if (command.kind === "new_fleet" && command.followUpTargetUid !== undefined) {
             const fleetUid = newFleetUidFromResponse(response.report);
             if (fleetUid === undefined) {
                 throw new Error(`new_fleet response did not include a fleet uid: ${JSON.stringify(response)}`);
             }
-            responses.push(await gamePost(config, "order", {
+            responses.push(summarizeGameResponse(await gamePost(config, "order", {
                 order: `add_fleet_orders,${fleetUid},0,${command.followUpTargetUid},0,0,0`,
-            }, sessionCookie));
+            }, sessionCookie)));
         }
     }
 
@@ -204,7 +204,7 @@ export async function submitDiplomacyDrafts(
                 body: draft.body,
             }, sessionCookie);
             ensureMessageSubmissionSucceeded(response);
-            responses.push(response);
+            responses.push(summarizeGameResponse(response));
         } else {
             const response = await gamePost(config, "create_game_message", {
                 fromColor: draft.fromColor,
@@ -216,7 +216,7 @@ export async function submitDiplomacyDrafts(
             }, sessionCookie);
             ensureMessageSubmissionSucceeded(response);
             await verifySingleRecipientMessage(config, sessionCookie, draft);
-            responses.push(response);
+            responses.push(summarizeGameResponse(response));
         }
     }
     return { submitted: true, responses };
@@ -239,7 +239,45 @@ export async function submitTurnReady(
     if (response.event !== "order:ok" && response.event !== "order:full_universe") {
         throw new Error(`force_ready failed: ${JSON.stringify(response)}`);
     }
-    return { submitted: true, responses: [response] };
+    return { submitted: true, responses: [summarizeGameResponse(response)] };
+}
+
+function summarizeGameResponse(response: { event: string; report: unknown }) {
+    return {
+        event: response.event,
+        report: summarizeReport(response.report),
+    };
+}
+
+function summarizeReport(report: unknown) {
+    if (!report || typeof report !== "object") return report;
+    const value = report as Record<string, unknown>;
+    if ("playerUid" in value && "tick" in value) {
+        return {
+            playerUid: value.playerUid,
+            tick: value.tick,
+            productionCounter: value.productionCounter,
+            turnBased: value.turnBased,
+            gameOver: value.gameOver,
+            players: recordCount(value.players),
+            stars: recordCount(value.stars),
+            fleets: recordCount(value.fleets),
+        };
+    }
+    if ("uid" in value) {
+        return {
+            uid: value.uid,
+            puid: value.puid,
+            st: value.st,
+            ouid: value.ouid,
+            o: value.o,
+        };
+    }
+    return value;
+}
+
+function recordCount(value: unknown) {
+    return value && typeof value === "object" ? Object.keys(value).length : undefined;
 }
 
 export function shouldSubmitTurnReady(scan: ScanningData) {

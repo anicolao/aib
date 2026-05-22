@@ -358,7 +358,7 @@ function executeCarrierCoverage(
     }
 
     if (fleetAssignments.length === 0 && newCarrierAssignments.length === 0 && uncoveredNeutralTargets.length === 0) {
-        rejected.push("no neutral stars are reachable before next production and no defensive carrier need was found");
+        rejected.push("no uncovered neutral stars can be reached before next production and no defensive carrier need was found");
     }
 
     return cash;
