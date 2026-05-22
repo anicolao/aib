@@ -325,7 +325,7 @@ function executeCarrierCoverage(
         commands.push({
             kind: "fleet_order",
             order: `add_fleet_orders,${assignment.fleet.uid},0,${assignment.target.uid},0,0,0`,
-            reason: `idle carrier ${assignment.fleet.uid} routed to neutral ${assignment.target.n}; eta ${assignment.eta.toFixed(1)} ticks before production`,
+            reason: `idle carrier ${assignment.fleet.uid} routed to neutral ${assignment.target.n}; eta ${assignment.eta.toFixed(1)} ticks within expansion horizon`,
         });
     }
 
@@ -344,7 +344,7 @@ function executeCarrierCoverage(
             order: `new_fleet,${assignment.source.uid},1`,
             reason: assignment.defensive
                 ? `build defensive carrier at ${assignment.source.n} for visible threat to ${assignment.target.n}`
-                : `build carrier at ${assignment.source.n} for neutral ${assignment.target.n}; eta ${assignment.eta.toFixed(1)} ticks before production`,
+                : `build carrier at ${assignment.source.n} for neutral ${assignment.target.n}; eta ${assignment.eta.toFixed(1)} ticks within expansion horizon`,
         };
         if (!assignment.defensive) {
             command.followUpTargetUid = assignment.target.uid;
@@ -354,18 +354,18 @@ function executeCarrierCoverage(
     }
 
     for (const target of uncoveredNeutralTargets) {
-        rejected.push(`neutral ${target.star.n} is reachable before production but has no available carrier source`);
+        rejected.push(`neutral ${target.star.n} is reachable within expansion horizon but has no available carrier source`);
     }
 
     if (fleetAssignments.length === 0 && newCarrierAssignments.length === 0 && uncoveredNeutralTargets.length === 0) {
-        rejected.push("no uncovered neutral stars can be reached before next production and no defensive carrier need was found");
+        rejected.push("no uncovered neutral stars can be reached within expansion horizon and no defensive carrier need was found");
     }
 
     return cash;
 }
 
 function assignCarrierCoverage(scan: ScanningData, stars: MutableStar[], fleets: Fleet[]) {
-    const ticksUntilProduction = nextProductionTicks(scan);
+    const expansionHorizonTicks = expansionHorizon(scan);
     const range = rangeValue(scan.players[String(scan.playerUid)]);
     const speed = Math.max(scan.fleetSpeed, 0.0001);
     const assignedTargets = new Set<number>();
@@ -375,20 +375,20 @@ function assignCarrierCoverage(scan: ScanningData, stars: MutableStar[], fleets:
     const idleFleets = fleets
         .filter((fleet) => fleet.o.length === 0 && fleet.st > 0 && Boolean(fleet.ouid))
         .sort((a, b) => b.st - a.st || a.uid - b.uid);
-    const neutralTargets = reachableNeutralTargets(scan, stars, range, speed, ticksUntilProduction);
+    const neutralTargets = reachableNeutralTargets(scan, stars, range, speed, expansionHorizonTicks);
     for (const fleet of fleets) {
         const targetUid = fleet.o[0]?.[1];
         const target = targetUid === undefined ? undefined : scan.stars[String(targetUid)];
         if (!target || !isNeutralStar(target)) continue;
         const fleetSpeed = Math.max(fleet.speed || scan.fleetSpeed, 0.0001);
         const eta = etaTicks(starDistance(fleet, target), fleetSpeed);
-        if (eta <= ticksUntilProduction) {
+        if (eta <= expansionHorizonTicks) {
             assignedTargets.add(target.uid);
         }
     }
 
     for (const fleet of idleFleets) {
-        const target = nearestReachableNeutralForFleet(scan, fleet, neutralTargets, assignedTargets, range, ticksUntilProduction);
+        const target = nearestReachableNeutralForFleet(scan, fleet, neutralTargets, assignedTargets, range, expansionHorizonTicks);
         if (!target) continue;
         assignedTargets.add(target.star.uid);
         fleetAssignments.push({ fleet, target: target.star, eta: target.eta });
@@ -396,7 +396,7 @@ function assignCarrierCoverage(scan: ScanningData, stars: MutableStar[], fleets:
 
     for (const target of neutralTargets) {
         if (assignedTargets.has(target.star.uid)) continue;
-        const source = bestCarrierSource(stars, sourceShips, target.star, range, speed, ticksUntilProduction);
+        const source = bestCarrierSource(stars, sourceShips, target.star, range, speed, expansionHorizonTicks);
         if (!source) continue;
         assignedTargets.add(target.star.uid);
         sourceShips.set(source.source.uid, (sourceShips.get(source.source.uid) ?? 0) - 1);
@@ -410,7 +410,7 @@ function assignCarrierCoverage(scan: ScanningData, stars: MutableStar[], fleets:
     }
 
     const assignedFleetUids = new Set(fleetAssignments.map((assignment) => assignment.fleet.uid));
-    for (const target of defensiveCarrierTargets(scan, stars, fleets, assignedFleetUids, ticksUntilProduction)) {
+    for (const target of defensiveCarrierTargets(scan, stars, fleets, assignedFleetUids, expansionHorizonTicks)) {
         const sourceShipsAvailable = sourceShips.get(target.uid) ?? 0;
         if (sourceShipsAvailable <= 0) {
             continue;
@@ -675,7 +675,7 @@ function reachableNeutralTargets(
     stars: MutableStar[],
     range: number,
     speed: number,
-    ticksUntilProduction: number,
+    expansionHorizonTicks: number,
 ): NeutralTarget[] {
     return Object.values(scan.stars)
         .filter(isNeutralStar)
@@ -683,7 +683,7 @@ function reachableNeutralTargets(
             star,
             nearestOwnedDistance: nearestOwnedDistance(stars, star),
         }))
-        .filter((target) => target.nearestOwnedDistance <= range && etaTicks(target.nearestOwnedDistance, speed) <= ticksUntilProduction)
+        .filter((target) => target.nearestOwnedDistance <= range && etaTicks(target.nearestOwnedDistance, speed) <= expansionHorizonTicks)
         .sort((a, b) => a.nearestOwnedDistance - b.nearestOwnedDistance || a.star.uid - b.star.uid);
 }
 
@@ -697,7 +697,7 @@ function nearestReachableNeutralForFleet(
     targets: NeutralTarget[],
     assignedTargets: Set<number>,
     range: number,
-    ticksUntilProduction: number,
+    expansionHorizonTicks: number,
 ) {
     const origin = scan.stars[String(fleet.ouid)];
     if (!origin) return undefined;
@@ -712,7 +712,7 @@ function nearestReachableNeutralForFleet(
                 eta: etaTicks(distance, speed),
             };
         })
-        .filter((target) => target.distance <= range && target.eta <= ticksUntilProduction)
+        .filter((target) => target.distance <= range && target.eta <= expansionHorizonTicks)
         .sort((a, b) => a.eta - b.eta || a.distance - b.distance || a.star.uid - b.star.uid)[0];
 }
 
@@ -722,7 +722,7 @@ function bestCarrierSource(
     target: Star,
     range: number,
     speed: number,
-    ticksUntilProduction: number,
+    expansionHorizonTicks: number,
 ) {
     return stars
         .filter((star) => (sourceShips.get(star.uid) ?? 0) > 0)
@@ -734,7 +734,7 @@ function bestCarrierSource(
                 eta: etaTicks(distance, speed),
             };
         })
-        .filter((candidate) => candidate.distance <= range && candidate.eta <= ticksUntilProduction)
+        .filter((candidate) => candidate.distance <= range && candidate.eta <= expansionHorizonTicks)
         .sort((a, b) => a.eta - b.eta || a.distance - b.distance || b.source.st - a.source.st)[0];
 }
 
@@ -743,7 +743,7 @@ function defensiveCarrierTargets(
     stars: MutableStar[],
     fleets: Fleet[],
     assignedFleetUids: Set<number>,
-    ticksUntilProduction: number,
+    expansionHorizonTicks: number,
 ) {
     const ownedFleetAtStar = new Set(
         fleets
@@ -760,7 +760,7 @@ function defensiveCarrierTargets(
         if (!target || target.puid !== scan.playerUid) continue;
         const speed = Math.max(fleet.speed || scan.fleetSpeed, 0.0001);
         const eta = safeNumber(delay, 0) + etaTicks(starDistance(fleet, target), speed);
-        if (eta <= ticksUntilProduction) {
+        if (eta <= expansionHorizonTicks) {
             threatened.add(target.uid);
         }
     }
@@ -773,9 +773,8 @@ function nearestOwnedDistance(stars: MutableStar[], target: Star) {
     return stars.reduce((nearest, star) => Math.min(nearest, starDistance(star, target)), Number.POSITIVE_INFINITY);
 }
 
-function nextProductionTicks(scan: ScanningData) {
-    const remaining = scan.productionRate - scan.productionCounter;
-    return remaining > 0 ? remaining : Math.max(1, scan.productionRate);
+function expansionHorizon(scan: ScanningData) {
+    return Math.max(1, scan.productionRate);
 }
 
 function etaTicks(distance: number, speed: number) {

@@ -95,15 +95,16 @@ Infrastructure is a greedy heuristic, not the final LP/MILP:
 Carrier routing is intentionally direct but no longer just "send everything to
 the frontier":
 
-- compute the ticks remaining before the next production boundary
-- identify neutral stars directly reachable before that production boundary
+- use one full production cycle as the expansion horizon
+- identify neutral stars directly reachable within that horizon
 - assign existing idle carriers to reachable neutral stars first
 - reserve enough cash to build carriers for the remaining reachable neutral
   stars, when source stars have spare ships
 - record a follow-up route for newly built carriers so live submission can use
   the returned fleet UID
 - after expansion coverage, build defensive carriers at owned stars with a
-  visible incoming threat before production and no owned carrier already present
+  visible incoming threat inside the expansion horizon and no owned carrier
+  already present
 - do not route through multi-hop paths yet
 
 This is enough to produce a coherent first turn without pretending to be a full
