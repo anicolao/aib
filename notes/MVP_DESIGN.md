@@ -74,12 +74,21 @@ therefore supports two modes:
 Dry-run is the default. Submission should fail closed if credentials are
 missing.
 
-## Decision Heuristics
+## Decision Logic
 
-Infrastructure is a greedy heuristic, not the final LP/MILP:
+Infrastructure now uses a bounded integer optimizer over a 30-tick horizon. It
+is still not a full MILP, but it searches purchase combinations rather than
+repeatedly taking the best immediate ratio:
 
-- reserve a configurable fraction of cash plus enough for a carrier
-- repeatedly score affordable economy, industry, and science purchases
+- reserve a configurable fraction of cash, planned tech-transfer cost, and a
+  capped logistics budget
+- generate affordable economy, industry, and science candidates from current
+  star state
+- search bounded buy sequences, updating star state and costs after each
+  purchase
+- maximize explicit utility for horizon-relevant income, ships, and research
+- emit optimizer utility, score, explored-node count, and prune count in the
+  decision trace
 - skip economy unless the next turn advances across a production boundary
 - when the next turn advances across a production boundary, buy only economy
   and defer industry/science to other turns
@@ -99,18 +108,20 @@ the frontier":
 
 - evaluate visible incoming attacks with a small battle calculator based on
   ship counts and weapons levels
-- route existing idle carriers to reinforce stars that visible enemy fleets
-  would otherwise capture
+- search visible defensive carrier groups and route the smallest sufficient set
+  that flips a losing battle with a weapons-based safety margin
 - choose a rally star that can reach threatened stars before likely enemy
   arrivals, and mass existing carrier strength there when one star can cover
-  multiple threats
+  multiple threats; reject infeasible rally plans that cannot gather enough
+  visible ships
 - route idle carriers to attack visible enemy stars when the battle estimate
-  says the carrier wins
-- use one full production cycle as the expansion horizon
+  says the carrier wins with a weapons-based safety margin
+- use the configured planning horizon, currently 30 ticks by default, for
+  tactical search and neutral expansion
 - identify neutral stars directly reachable within that horizon
 - assign existing idle carriers to reachable neutral stars first
-- reserve enough cash to build carriers for the remaining reachable neutral
-  stars, when source stars have spare ships
+- build carriers for remaining reachable neutral stars only within the
+  logistics budget, when source stars have spare ships
 - record a follow-up route for newly built carriers so live submission can use
   the returned fleet UID
 - after neutral expansion, if at least `$200` remains, build at most one

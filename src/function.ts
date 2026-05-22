@@ -44,7 +44,7 @@ function configFromEnv(): TurnConfig {
         scan,
         submit: process.env.AIB_SUBMIT === "1",
         planner: {
-            horizonTicks: numberFromEnv("AIB_HORIZON_TICKS", 24),
+            horizonTicks: numberFromEnv("AIB_HORIZON_TICKS", 30),
             cashReserveRatio: numberFromEnv("AIB_CASH_RESERVE_RATIO", 0.2),
             buildCarrier: process.env.AIB_BUILD_CARRIER !== "0",
             markReady: process.env.AIB_MARK_READY === "1",

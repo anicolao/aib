@@ -59,7 +59,7 @@ async function main() {
         scan,
         submit: args.submit,
         planner: {
-            horizonTicks: args.horizonTicks ?? numberFromEnv("AIB_HORIZON_TICKS", 24),
+            horizonTicks: args.horizonTicks ?? numberFromEnv("AIB_HORIZON_TICKS", 30),
             cashReserveRatio: numberFromEnv("AIB_CASH_RESERVE_RATIO", 0.2),
             buildCarrier: args.buildCarrier,
             markReady: args.markReady,
@@ -104,7 +104,7 @@ async function runDiscoveredTurns(account: AccountConfig, args: CliArgs, baseUrl
     for (const game of games) {
         const gameId = accountGameId(game);
         const planner = {
-            horizonTicks: args.horizonTicks ?? numberFromEnv("AIB_HORIZON_TICKS", 24),
+            horizonTicks: args.horizonTicks ?? numberFromEnv("AIB_HORIZON_TICKS", 30),
             cashReserveRatio: numberFromEnv("AIB_CASH_RESERVE_RATIO", 0.2),
             buildCarrier: args.buildCarrier,
             markReady: args.markReady,
@@ -243,7 +243,7 @@ Options:
   --submit             Submit orders, diplomacy drafts, and turn-ready after planning. Requires NP_USER and NP_PASSWD.
   --ready              Include force_ready for turn-based games.
   --no-build-carrier   Disable one-carrier build heuristic.
-  --horizon TICKS      Planning horizon for infrastructure scoring.
+  --horizon TICKS      Planning horizon for optimization. Defaults to 30.
   --base-url URL       Defaults to NP_BASE_URL or https://np4.ironhelmet.com.
 `);
 }

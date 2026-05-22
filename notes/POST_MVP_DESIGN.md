@@ -309,18 +309,23 @@ interface InfraPlan {
 
 ## Implementation Plan
 
-1. Split pure helpers out of `planner.ts` without changing behavior.
-2. Add `forecast.ts` and make the current planner consume projected star ships
+1. Replace the default planning horizon with 30 ticks.
+2. Add a bounded integer infrastructure optimizer inside the existing planner
+   before splitting modules.
+3. Add a logistics budget so new carrier builds compete with infrastructure
+   instead of consuming all available cash.
+4. Replace greedy one-fleet defense with a small defensive carrier-group
+   search.
+5. Split pure helpers out of `planner.ts` without changing behavior.
+6. Add `forecast.ts` and make the current planner consume projected star ships
    and production timing from it.
-3. Replace greedy infrastructure with branch-and-bound over a filtered
-   candidate set.
-4. Add task generation for defense, neutral expansion, attacks, and staging.
-5. Replace carrier coverage with logistics allocation over task value and
+7. Add task generation for defense, neutral expansion, attacks, and staging.
+8. Replace carrier coverage with logistics allocation over task value and
    carrier budget.
-6. Add one-hop routing search and make attack/defense assignments use routes
+9. Add one-hop routing search and make attack/defense assignments use routes
    rather than direct-only checks.
-7. Extend dry-run output with candidate task, logistics, and optimizer ledgers.
-8. Add replay fixtures from real dry runs before tuning weights.
+10. Extend dry-run output with candidate task, logistics, and optimizer ledgers.
+11. Add replay fixtures from real dry runs before tuning weights.
 
 ## Validation
 
