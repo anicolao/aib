@@ -177,7 +177,11 @@ export interface CombatSummary {
         eta: number;
         attackerShips: number;
         defenderShips: number;
+        attackerWeapons: number;
+        defenderWeapons: number;
         attackerWins: boolean;
+        attackerRemaining: number;
+        defenderRemaining: number;
         additionalDefendersNeeded: number;
     }>;
     plannedAttacks: Array<{
@@ -275,6 +279,17 @@ const TECH = {
     SCANNING: 4,
     WEAPONS: 5,
     TERRAFORMING: 6,
+} as const;
+
+const FLEET_ORDER = {
+    NOTHING: 0,
+    COLLECT_ALL: 1,
+    DROP_ALL: 2,
+    COLLECT: 3,
+    DROP: 4,
+    COLLECT_ALL_BUT: 5,
+    DROP_ALL_BUT: 6,
+    GARRISON: 7,
 } as const;
 
 export function planTurn(
@@ -906,7 +921,11 @@ function combatSummary(plan: TacticalPlan): CombatSummary {
             eta: rounded(attack.eta),
             attackerShips: attack.estimate.attackerShips,
             defenderShips: attack.estimate.defenderShips,
+            attackerWeapons: attack.estimate.attackerWeapons,
+            defenderWeapons: attack.estimate.defenderWeapons,
             attackerWins: attack.estimate.attackerWins,
+            attackerRemaining: attack.estimate.attackerRemaining,
+            defenderRemaining: attack.estimate.defenderRemaining,
             additionalDefendersNeeded: attack.estimate.additionalDefendersNeeded,
         })),
         plannedAttacks: plan.attackOpportunities.map(routeSummary),
@@ -1163,23 +1182,83 @@ function visibleIncomingAttacks(scan: ScanningData, stars: MutableStar[]): Incom
     return Object.values(scan.fleets)
         .filter((fleet) => fleet.puid !== scan.playerUid && fleet.o.length > 0)
         .map((fleet) => {
-            const [delay, targetUid] = fleet.o[0] ?? [];
-            const target = targetUid === undefined ? undefined : starsByUid.get(targetUid);
+            const routeAttack = incomingAttackFromRoute(scan, fleet, starsByUid);
+            const target = routeAttack?.target;
             const attacker = scan.players[String(fleet.puid)];
-            if (!target || !attacker) return undefined;
-            const eta = safeNumber(delay, 0) + etaTicks(starDistance(fleet, target), Math.max(fleet.speed || scan.fleetSpeed, 0.0001));
+            if (!routeAttack || !target || !attacker) return undefined;
             const estimate = estimateStarBattle(
                 scan,
                 fleet.puid,
-                fleet.st,
+                routeAttack.ships,
                 target,
-                eta,
-                orbitingShipsAt(scan, target.uid, target.puid, eta),
+                routeAttack.eta,
+                orbitingShipsAt(scan, target.uid, target.puid, routeAttack.eta),
             );
-            return { fleet, attacker, target, eta, estimate };
+            return { fleet, attacker, target, eta: routeAttack.eta, estimate };
         })
         .filter((attack): attack is IncomingAttack => Boolean(attack))
-        .sort((a, b) => a.eta - b.eta || b.fleet.st - a.fleet.st || a.fleet.uid - b.fleet.uid);
+        .sort((a, b) => a.eta - b.eta || b.estimate.attackerShips - a.estimate.attackerShips || a.fleet.uid - b.fleet.uid);
+}
+
+function incomingAttackFromRoute(scan: ScanningData, fleet: Fleet, ownedTargets: Map<number, MutableStar>) {
+    let ships = Math.max(0, fleet.st);
+    let eta = 0;
+    let position: Pick<Star, "x" | "y"> = fleet;
+    const speed = Math.max(fleet.speed || scan.fleetSpeed, 0.0001);
+
+    for (const [delayRaw, targetUid, action, argument] of fleet.o) {
+        const target = scan.stars[String(targetUid)];
+        if (!target) return undefined;
+        const delay = safeNumber(delayRaw, 0);
+        eta += delay + etaTicks(starDistance(position, target), speed);
+
+        const ownedTarget = ownedTargets.get(target.uid);
+        if (ownedTarget) {
+            return {
+                target: ownedTarget,
+                eta,
+                ships,
+            };
+        }
+
+        if (isScanned(target) && target.puid === fleet.puid && ships > 0) {
+            ships = applyFleetOrderAction(ships, projectedStarShips(scan, target, eta), action, argument);
+        }
+        position = target;
+    }
+    return undefined;
+}
+
+function applyFleetOrderAction(fleetShips: number, starShips: number, action: number, argument: number) {
+    let transferred = 0;
+    switch (action) {
+        case FLEET_ORDER.NOTHING:
+            break;
+        case FLEET_ORDER.COLLECT_ALL:
+            transferred = -starShips;
+            break;
+        case FLEET_ORDER.COLLECT:
+            transferred = -argument;
+            break;
+        case FLEET_ORDER.COLLECT_ALL_BUT:
+            transferred = Math.min(0, -starShips + argument);
+            break;
+        case FLEET_ORDER.DROP_ALL:
+            transferred = fleetShips;
+            break;
+        case FLEET_ORDER.DROP:
+            transferred = argument;
+            break;
+        case FLEET_ORDER.DROP_ALL_BUT:
+            transferred = Math.max(0, fleetShips - argument);
+            break;
+        case FLEET_ORDER.GARRISON:
+            transferred = -starShips + argument;
+            break;
+    }
+    transferred = Math.max(-starShips, transferred);
+    transferred = Math.min(fleetShips - 1, transferred);
+    return Math.max(0, fleetShips - transferred);
 }
 
 function assignDirectDefenses(
@@ -1430,7 +1509,7 @@ function incomingAttackSummary(attack: IncomingAttack) {
     const outcome = attack.estimate.attackerWins
         ? `loses without ${attack.estimate.additionalDefendersNeeded} more defenders`
         : `holds with ${attack.estimate.defenderRemaining} ships`;
-    return `${attack.attacker.alias} fleet ${attack.fleet.uid} is attacking ${attack.target.n}; eta ${attack.eta.toFixed(1)} ticks, ${outcome}`;
+    return `${attack.attacker.alias} fleet ${attack.fleet.uid} is attacking ${attack.target.n} with ${attack.estimate.attackerShips} ships; eta ${attack.eta.toFixed(1)} ticks, ${outcome}`;
 }
 
 function defensiveBattleMargin(scan: ScanningData, attackerUid: number) {

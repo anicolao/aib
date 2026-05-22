@@ -261,9 +261,9 @@ function renderCombat(decision: DecisionRecord) {
     const lines = ["### Combat", ""];
     for (const attack of attacks.slice(0, 8)) {
         const outcome = attack.attackerWins
-            ? `would lose without ${attack.additionalDefendersNeeded} more defenders`
-            : "currently holds";
-        lines.push(`- Incoming ${attack.attackerAlias} fleet ${attack.fleetUid} to ${attack.targetName} in ${attack.eta} ticks: ${outcome}.`);
+            ? `attackers win with ${attack.attackerRemaining} remaining; +${attack.additionalDefendersNeeded} defenders needed to survive`
+            : `defenders hold with ${attack.defenderRemaining} remaining`;
+        lines.push(`- Incoming ${attack.attackerAlias} fleet ${attack.fleetUid} to ${attack.targetName} in ${attack.eta} ticks: attackers ${attack.attackerShips} ships WS ${attack.attackerWeapons}; defenders ${attack.defenderShips} ships WS ${attack.defenderWeapons}; ${outcome}.`);
     }
     for (const route of planned.slice(0, 8)) {
         lines.push(`- Planned carrier ${route.fleetUid} to ${route.targetName}: ${route.reason}`);

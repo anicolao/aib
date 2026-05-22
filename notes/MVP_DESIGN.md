@@ -112,6 +112,12 @@ the frontier":
 
 - evaluate visible incoming attacks with a small battle calculator based on
   ship counts and weapons levels
+- simulate queued fleet orders to the first owned target, including
+  collect/drop actions at the attacker's visible intermediate stars, so a
+  one-ship carrier that picks up ships en route is not underestimated
+- project defending star ships from current ships plus `yard` progress and
+  continuous industry production through ETA; do not use the economy production
+  counter as a ship-production batch
 - search visible defensive carrier groups and route the smallest sufficient set
   that flips a losing battle with a weapons-based safety margin
 - choose a rally star that can reach threatened stars before likely enemy

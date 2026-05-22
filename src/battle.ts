@@ -58,10 +58,10 @@ export function estimateBattle(combatants: Combatants): BattleEstimate {
 }
 
 export function projectedStarShips(scan: ScanningData, star: ScannedStar, ticksUntilArrival: number) {
-    const productionEvents = Math.floor((scan.productionCounter + Math.max(0, ticksUntilArrival)) / Math.max(1, scan.productionRate));
     const owner = scan.players[String(star.puid)];
-    const production = productionEvents * star.i * (manufacturingLevel(owner) + 4);
-    return Math.floor(star.st + production);
+    const shipyardProgress = safeNumber(star.yard, 0);
+    const shipsPerTick = (star.i * (manufacturingLevel(owner) + 4)) / Math.max(1, scan.productionRate);
+    return Math.floor(star.st + shipyardProgress + Math.max(0, ticksUntilArrival) * shipsPerTick);
 }
 
 function simulateRaw(combatants: Combatants) {
