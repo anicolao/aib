@@ -211,7 +211,9 @@ function buyInfrastructure(
 
         const candidate = bestInfraCandidate(scan, player, stars, spendable, plannerConfig);
         if (!candidate) {
-            rejected.push(`no infrastructure candidate passed affordability, production-timing, and ratio-cap filters within spendable budget $${spendable}`);
+            rejected.push(
+                `stopped infrastructure after ${purchases} purchases; no additional candidate passed affordability, production-timing, and ratio-cap filters within spendable budget $${spendable}`,
+            );
             break;
         }
 
@@ -252,6 +254,10 @@ function bestInfraCandidate(
                 cost: ecoCost,
                 score: (productionCycles * 10) / ecoCost,
             });
+        }
+
+        if (buyEconomy) {
+            continue;
         }
 
         const industryCost = industryCostFor(gameConfig, star);

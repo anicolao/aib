@@ -81,6 +81,8 @@ Infrastructure is a greedy heuristic, not the final LP/MILP:
 - reserve a configurable fraction of cash plus enough for a carrier
 - repeatedly score affordable economy, industry, and science purchases
 - skip economy unless the next turn advances across a production boundary
+- when the next turn advances across a production boundary, buy only economy
+  and defer industry/science to other turns
 - skip industry purchases that would raise a star above one industry per two
   economy
 - skip science purchases that would raise a star above one science per two
