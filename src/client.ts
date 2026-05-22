@@ -215,6 +215,7 @@ export async function submitDiplomacyDrafts(
                 body: draft.body,
             }, sessionCookie);
             ensureMessageSubmissionSucceeded(response);
+            await verifySingleRecipientMessage(config, sessionCookie, draft);
             responses.push(response);
         }
     }
@@ -224,6 +225,37 @@ export async function submitDiplomacyDrafts(
 function ensureMessageSubmissionSucceeded(response: { event: string; report: unknown }) {
     if (!response.event.startsWith("message:") || response.event.includes("error")) {
         throw new Error(`Diplomacy submission failed: ${JSON.stringify(response)}`);
+    }
+}
+
+async function verifySingleRecipientMessage(config: AccountConfig, cookie: string, draft: DiplomacyDraft) {
+    const response = await gamePost(config, "fetch_game_messages", {
+        group: "game_diplomacy",
+        count: "20",
+        offset: "0",
+    }, cookie);
+    if (response.event !== "message:new_messages") {
+        throw new Error(`Could not verify diplomacy message recipients: ${JSON.stringify(response)}`);
+    }
+
+    const expectedRecipient = draft.recipientUid;
+    const sent = messageArray(response.report).find((message) => {
+        if (!message || typeof message !== "object") return false;
+        const payload = (message as { payload?: Record<string, unknown> }).payload;
+        if (!payload) return false;
+        return payload.subject === draft.subject
+            && payload.body === draft.body
+            && numericArray(payload.to_uids).includes(expectedRecipient);
+    });
+
+    if (!sent || typeof sent !== "object") {
+        throw new Error(`Could not verify diplomacy message to ${draft.recipientAlias} after submission`);
+    }
+
+    const payload = (sent as { payload?: Record<string, unknown> }).payload;
+    const toUids = numericArray(payload?.to_uids);
+    if (toUids.length !== 1 || toUids[0] !== expectedRecipient) {
+        throw new Error(`Diplomacy message recipient mismatch: expected [${expectedRecipient}], got ${JSON.stringify(toUids)}`);
     }
 }
 
@@ -331,6 +363,25 @@ function extractCookie(response: Response) {
         .map((cookie) => cookie.split(";")[0]?.trim())
         .filter(Boolean)
         .join("; ");
+}
+
+function numericArray(value: unknown) {
+    if (Array.isArray(value)) {
+        return value.map(numeric).filter((entry): entry is number => entry !== undefined);
+    }
+    if (typeof value === "string") {
+        return value.split(",").map(numeric).filter((entry): entry is number => entry !== undefined);
+    }
+    return [];
+}
+
+function numeric(value: unknown) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() !== "") {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) return parsed;
+    }
+    return undefined;
 }
 
 function trimTrailingSlash(value: string) {
