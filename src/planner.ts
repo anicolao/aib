@@ -136,8 +136,16 @@ interface FleetRouteAssignment {
     fleet: Fleet;
     target: Star;
     eta: number;
-    role: "attack" | "defend" | "rally";
+    role: "attack" | "defend" | "rally" | "supply";
     reason: string;
+}
+
+interface SupplyShuttleAssignment {
+    fleet: Fleet;
+    source: MutableStar;
+    target: MutableStar;
+    eta: number;
+    score: number;
 }
 
 interface IncomingAttack {
@@ -364,6 +372,7 @@ export function planTurn(
         const carrierExecution = executeCarrierCoverage(scan, stars, ownFleets, tacticalFleetUids, cash, carrierPlan.budget, config.horizonTicks, builtCarriersThisTurn, commands, rejected);
         cash = carrierExecution.cash;
         builtCarriersThisTurn += carrierExecution.builtCount;
+        executeSupplyShuttles(scan, stars, ownFleets, tacticalFleetUids, config.horizonTicks, commands, rejected);
         const stagingExecution = executeShipStaging(scan, stars, cash, builtCarriersThisTurn, carrierPlan.budget - carrierExecution.spent, commands, rejected);
         cash = stagingExecution.cash;
         builtCarriersThisTurn += stagingExecution.builtCount;
@@ -554,7 +563,7 @@ function infraCandidates(
         const industryCost = industryCostFor(gameConfig, star);
         if (industryCost <= spendable && belowIndustryCapAfterPurchase(star)) {
             const shipsByHorizon = productionCycles * (manufacturing + 4);
-            const utility = shipsByHorizon * star.frontierWeight * 7 - industryCost * 0.05;
+            const utility = shipsByHorizon * star.frontierWeight * 11 - industryCost * 0.04;
             candidates.push({
                 kind: "industry",
                 star,
@@ -567,8 +576,8 @@ function infraCandidates(
 
         const scienceCost = scienceCostFor(gameConfig, star);
         if (scienceCost <= spendable && belowScienceCapAfterPurchase(star)) {
-            const scienceNeed = Math.max(0.25, player.totalIndustry / Math.max(1, player.totalScience * 4));
-            const utility = scienceNeed * plannerConfig.horizonTicks * 1.5 - scienceCost * 0.05;
+            const scienceNeed = Math.max(0.75, player.totalIndustry / Math.max(1, player.totalScience * 2));
+            const utility = scienceNeed * plannerConfig.horizonTicks * 3 - scienceCost * 0.035;
             candidates.push({
                 kind: "science",
                 star,
@@ -1013,6 +1022,7 @@ function executeCarrierCoverage(
     const { fleetAssignments, newCarrierAssignments, uncoveredNeutralTargets } = assignCarrierCoverage(scan, stars, fleets, unavailableFleetUids, budget, horizonTicks, builtCarriersThisTurn, rejected);
 
     for (const assignment of fleetAssignments) {
+        unavailableFleetUids.add(assignment.fleet.uid);
         commands.push({
             kind: "fleet_order",
             order: `add_fleet_orders,${assignment.fleet.uid},0,${assignment.target.uid},0,0,0`,
@@ -1055,6 +1065,83 @@ function executeCarrierCoverage(
     }
 
     return { cash, builtCount: built, spent };
+}
+
+function executeSupplyShuttles(
+    scan: ScanningData,
+    stars: MutableStar[],
+    fleets: Fleet[],
+    unavailableFleetUids: Set<number>,
+    horizonTicks: number,
+    commands: PlannedCommand[],
+    rejected: string[],
+) {
+    const assignments = assignSupplyShuttles(scan, stars, fleets, unavailableFleetUids, horizonTicks);
+    for (const assignment of assignments) {
+        unavailableFleetUids.add(assignment.fleet.uid);
+        commands.push({
+            kind: "fleet_order",
+            order: `add_fleet_orders,${assignment.fleet.uid},0,${assignment.target.uid},0,0,0`,
+            reason: `supply shuttle carrier ${assignment.fleet.uid} moves ${assignment.fleet.st} ships from ${assignment.source.n} toward frontier ${assignment.target.n}; eta ${assignment.eta.toFixed(1)} ticks, score ${assignment.score.toFixed(2)}`,
+        });
+    }
+    if (assignments.length === 0) {
+        rejected.push("no idle carrier supply shuttle found from core surplus stars to higher-value frontier stars");
+    }
+}
+
+function assignSupplyShuttles(
+    scan: ScanningData,
+    stars: MutableStar[],
+    fleets: Fleet[],
+    unavailableFleetUids: Set<number>,
+    horizonTicks: number,
+) {
+    const assignments: SupplyShuttleAssignment[] = [];
+    const assignedTargets = new Set<number>();
+    const range = rangeValue(scan.players[String(scan.playerUid)]);
+    for (const fleet of idleOrbitingFleets(fleets, unavailableFleetUids)) {
+        const source = stars.find((star) => star.uid === fleet.ouid);
+        if (!source) continue;
+        const assignment = bestSupplyShuttle(scan, stars, source, fleet, assignedTargets, range, horizonTicks);
+        if (!assignment) continue;
+        assignedTargets.add(assignment.target.uid);
+        assignments.push(assignment);
+    }
+    return assignments;
+}
+
+function bestSupplyShuttle(
+    scan: ScanningData,
+    stars: MutableStar[],
+    source: MutableStar,
+    fleet: Fleet,
+    assignedTargets: Set<number>,
+    range: number,
+    horizonTicks: number,
+): SupplyShuttleAssignment | undefined {
+    const sourceScore = frontierSupplyScore(scan, source);
+    return stars
+        .filter((target) => target.uid !== source.uid && !assignedTargets.has(target.uid))
+        .map((target) => {
+            const distance = starDistance(source, target);
+            const eta = etaTicks(distance, Math.max(fleet.speed || scan.fleetSpeed, 0.0001));
+            const targetScore = frontierSupplyScore(scan, target);
+            const score = (targetScore - sourceScore) * Math.max(1, fleet.st) - eta * 0.25;
+            return { fleet, source, target, eta, score, distance };
+        })
+        .filter((assignment) => assignment.distance <= range
+            && assignment.eta <= horizonTicks
+            && assignment.score > 1)
+        .sort((a, b) => b.score - a.score || b.fleet.st - a.fleet.st || a.eta - b.eta || a.target.uid - b.target.uid)[0];
+}
+
+function frontierSupplyScore(scan: ScanningData, star: MutableStar) {
+    const incoming = Object.values(scan.fleets).some((fleet) => fleet.puid !== scan.playerUid && fleet.o[0]?.[1] === star.uid)
+        ? 4
+        : 0;
+    const shipNeed = Math.max(0, scan.tick - star.st) / Math.max(1, scan.tick);
+    return star.frontierWeight + incoming + shipNeed;
 }
 
 function planDefensiveCarrierBuilds(
@@ -1268,7 +1355,7 @@ function executeShipStaging(
 ): CarrierExecution {
     let cash = cashStart;
     if (cash < 200) {
-        rejected.push(`skipped ship staging because cash $${cash} is below the $200 staging reserve`);
+        rejected.push(`skipped low-priority staging carrier build because cash $${cash} is below the $200 staging reserve`);
         return { cash, builtCount: 0 };
     }
 
@@ -1280,7 +1367,7 @@ function executeShipStaging(
 
     const cost = carrierCostFor(scan.config, builtCarriersThisTurn);
     if (cost > remainingBudget) {
-        rejected.push(`skipped ship staging because remaining carrier budget $${remainingBudget} is below carrier cost $${cost}`);
+        rejected.push(`skipped low-priority staging carrier build because remaining carrier-build budget $${remainingBudget} is below carrier cost $${cost}`);
         return { cash, builtCount: 0 };
     }
     if (cash < cost) {
@@ -2272,13 +2359,30 @@ function carrierCostFor(config: GameConfig, buildIndex: number) {
 }
 
 function frontierWeight(scan: ScanningData, star: ScannedStar) {
-    let nearestOther = Number.POSITIVE_INFINITY;
+    let nearestEnemy = Number.POSITIVE_INFINITY;
+    let nearestNeutral = Number.POSITIVE_INFINITY;
     for (const other of Object.values(scan.stars)) {
         if (other.uid === star.uid || other.puid === scan.playerUid) continue;
-        nearestOther = Math.min(nearestOther, starDistance(star, other));
+        const distance = starDistance(star, other);
+        if (other.puid > 0 && activePlayer(scan, other.puid)) {
+            nearestEnemy = Math.min(nearestEnemy, distance);
+        } else if (other.puid <= 0) {
+            nearestNeutral = Math.min(nearestNeutral, distance);
+        }
     }
-    if (!Number.isFinite(nearestOther)) return 1;
-    return 1 + 1 / Math.max(0.1, nearestOther);
+    const player = scan.players[String(scan.playerUid)];
+    const range = Math.max(0.1, rangeValue(player));
+    const enemyPressure = Number.isFinite(nearestEnemy)
+        ? Math.max(0, 1 - nearestEnemy / (range * 2.5))
+        : 0;
+    const neutralPressure = Number.isFinite(nearestNeutral)
+        ? Math.max(0, 1 - nearestNeutral / (range * 1.5))
+        : 0;
+    const incomingPressure = Object.values(scan.fleets).some((fleet) => {
+        const targetUid = fleet.o[0]?.[1];
+        return fleet.puid !== scan.playerUid && targetUid === star.uid;
+    }) ? 1 : 0;
+    return 1 + enemyPressure * 2.5 + neutralPressure * 1.25 + incomingPressure * 3;
 }
 
 function isScanned(star: Star): star is ScannedStar {

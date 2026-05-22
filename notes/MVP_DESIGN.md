@@ -101,9 +101,10 @@ repeatedly taking the best immediate ratio:
 - skip science purchases that would raise a star above one science per two
   industry
 - value economy by production cycles remaining in the horizon
-- value industry by ships produced over the horizon, weighted toward frontier
-  stars
-- value science lightly so the bot does not completely starve research
+- value industry by ships produced over the horizon, strongly weighted toward
+  stars near enemies, reachable neutrals, or visible incoming attacks
+- value science as a core growth path, especially when total science lags
+  industry
 - emit `upgrade_economy`, `upgrade_industry`, and `upgrade_science` commands
   with the exact cost used in the decision
 
@@ -138,12 +139,18 @@ the frontier":
 - assign existing idle carriers to reachable neutral stars first
 - build carriers for remaining reachable neutral stars only within the
   logistics budget, when source stars have spare ships
+- after neutral expansion, route remaining idle carriers as budget-free supply
+  shuttles from lower-value core stars toward higher-value owned frontier stars;
+  this moves ships already on carriers and is not blocked by carrier-build
+  budget
 - record a follow-up route for newly built carriers so live submission can use
   the returned fleet UID
 - after neutral expansion, if at least `$200` remains, build at most one
   staging carrier from the largest owned star with more ships than the current
   tick number and move roughly half that star's ships to an owned star closer
   to an enemy empire
+- carrier-build budget limits only new carrier construction; idle carrier
+  routing still runs even when low-priority carrier builds are skipped
 - do not treat carrier construction as defense; defense requires moving
   existing ships into position
 - do not route through multi-hop paths yet
