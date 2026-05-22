@@ -43,6 +43,8 @@ function configFromEnv(): TurnConfig {
     const config: TurnConfig = {
         scan,
         submit: process.env.AIB_SUBMIT === "1",
+        recordGame: process.env.AIB_RECORD_GAME === "1",
+        recordRoot: process.env.AIB_RECORD_DIR,
         planner: {
             horizonTicks: numberFromEnv("AIB_HORIZON_TICKS", 30),
             cashReserveRatio: numberFromEnv("AIB_CASH_RESERVE_RATIO", 0.2),

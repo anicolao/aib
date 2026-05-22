@@ -127,7 +127,10 @@ export async function createAccountSession(config: AccountConfig): Promise<Accou
 
 export function activeGamesFromReport(report: unknown): AccountGame[] {
     const player = report as InitPlayerReport;
-    return (player.open_games ?? []).filter((game) => game.status === "active");
+    return (player.open_games ?? []).filter((game) => {
+        const status = game.status?.toLowerCase();
+        return status === undefined || status === "active" || status === "open";
+    });
 }
 
 export async function login(config: AccountConfig): Promise<string> {

@@ -17,6 +17,7 @@ import {
 import { runTurn, type TurnConfig } from "./run-turn.js";
 import { planTurn, type DecisionRecord } from "./planner.js";
 import { flavorDiplomacyDrafts } from "./diplomacy-style.js";
+import { recordTurnInputs } from "./recorder.js";
 
 interface CliArgs {
     gameId?: string;
@@ -60,6 +61,8 @@ async function main() {
     const config: TurnConfig = {
         scan,
         submit: args.submit,
+        recordGame: shouldRecordGame(args),
+        recordRoot: process.env.AIB_RECORD_DIR,
         planner: {
             horizonTicks: args.horizonTicks ?? numberFromEnv("AIB_HORIZON_TICKS", 30),
             cashReserveRatio: numberFromEnv("AIB_CASH_RESERVE_RATIO", 0.2),
@@ -134,6 +137,15 @@ async function runDiscoveredTurns(account: AccountConfig, args: CliArgs, baseUrl
             baseUrl,
             gameId,
         }, session.cookie);
+        if (shouldRecordGame(args)) {
+            await recordTurnInputs({
+                gameId,
+                scan,
+                diplomacyMessages,
+                gameEvents,
+                rootDir: process.env.AIB_RECORD_DIR,
+            });
+        }
         const decision = await flavorDiplomacyDrafts(
             planTurn(scan, planner, true, diplomacyMessages, gameEvents),
             geminiConfig(gameId),
@@ -377,6 +389,10 @@ function stringValue(value: unknown) {
     return typeof value === "string" ? value : undefined;
 }
 
+function shouldRecordGame(args: CliArgs) {
+    return !args.scanFile && process.env.AIB_RECORD_GAME !== "0";
+}
+
 function printHelp() {
     process.stdout.write(`Usage:
   npx ts-node src/cli.ts --game GAME_ID --key API_KEY
@@ -389,6 +405,10 @@ Options:
   --horizon TICKS      Planning horizon for optimization. Defaults to 30.
   --json               Print the full raw JSON result instead of a concise Markdown summary.
   --base-url URL       Defaults to NP_BASE_URL or https://np4.ironhelmet.com.
+
+Environment:
+  AIB_RECORD_GAME=0    Disable per-game scan/event recording.
+  AIB_RECORD_DIR=PATH  Store game-#### folders under PATH instead of the current directory.
 `);
 }
 
