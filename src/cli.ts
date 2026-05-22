@@ -226,6 +226,7 @@ function renderTurnSummary(result: TurnSummaryInput) {
         "",
         ...renderCommands(decision),
         ...renderDiplomacy(decision),
+        ...renderDefenseGraph(decision),
         ...renderCombat(decision),
         ...renderRejected(decision),
         result.submission.submitted ? "**Submitted:** yes" : "**Submitted:** no",
@@ -265,6 +266,25 @@ function renderDiplomacy(decision: DecisionRecord) {
     ];
 }
 
+function renderDefenseGraph(decision: DecisionRecord) {
+    const graph = decision.defenseGraph;
+    if (!graph || (graph.threats.length === 0 && graph.hubs.length === 0)) return [];
+
+    const lines = ["### Defense Graph", ""];
+    lines.push(`Turn jump: ${graph.turnJumpTicks} ticks.`);
+    for (const threat of graph.threats.slice(0, 8)) {
+        lines.push(`- ${threat.enemyAlias} from ${threat.originName} can hit ${threat.targetName}: ETA ${threat.enemyTravelTicks.toFixed(1)}, reaction ${threat.reactionTicks.toFixed(1)}, attackers ${threat.attackerShips} WS ${threat.attackerWeapons}, +${threat.requiredReinforcement} defenders needed.`);
+    }
+    for (const hub of graph.hubs.slice(0, 6)) {
+        lines.push(`- Hub ${hub.hubStarName}: reserve ${hub.currentReserveShips}/${hub.reserveShipsRequired}, covers ${hub.coveredTargetNames.join(", ")}, value ${Math.round(hub.coverageValue)}.`);
+    }
+    if (graph.uncoveredTargetUids.length > 0) {
+        lines.push(`- Uncovered threatened stars: ${graph.uncoveredTargetUids.join(", ")}.`);
+    }
+    lines.push("");
+    return lines;
+}
+
 function renderCombat(decision: DecisionRecord) {
     const attacks = decision.combat.incomingAttacks;
     const planned = [...decision.combat.plannedDefenses, ...decision.combat.plannedAttacks];
@@ -289,7 +309,7 @@ function renderCombat(decision: DecisionRecord) {
 
 function renderRejected(decision: DecisionRecord) {
     const interesting = decision.rejected
-        .filter((entry) => /optimizer|carrier budget|staging|incoming|attacking|loses|holds|skipped|blocked/i.test(entry))
+        .filter((entry) => /optimizer|carrier budget|staging|incoming|attacking|loses|holds|skipped|blocked|defense graph|reserved idle carrier/i.test(entry))
         .slice(0, 10);
     if (interesting.length === 0) return [];
     return [
