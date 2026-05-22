@@ -27,6 +27,7 @@ export interface DecisionRecord {
         ownedFleets: number;
         commandsPlanned: number;
         diplomacyDraftsPlanned: number;
+        techTransfersPlanned: number;
     };
     commands: PlannedCommand[];
     diplomacyDrafts: DiplomacyDraft[];
@@ -212,6 +213,39 @@ interface DiplomacyEvent {
     body?: string;
 }
 
+interface GameEvent {
+    payload?: {
+        template?: unknown;
+        tick?: unknown;
+        from_puid?: unknown;
+        to_puid?: unknown;
+        tech?: unknown;
+        name?: unknown;
+        level?: unknown;
+        attackers?: unknown;
+        defenders?: unknown;
+    };
+}
+
+interface SharedTechnologyEvent {
+    tick: number;
+    fromUid: number;
+    toUid: number;
+    techKind: number;
+    level: number;
+}
+
+interface TechTransferPlan {
+    commands: PlannedCommand[];
+    diplomacyDrafts: DiplomacyDraft[];
+    reserveCost: number;
+}
+
+interface TechTradeDecision {
+    techKind: number;
+    reason: string;
+}
+
 const TECH = {
     BANKING: 0,
     RESEARCH: 1,
@@ -227,6 +261,7 @@ export function planTurn(
     config: PlannerConfig,
     dryRun: boolean,
     diplomacyMessages: unknown[] = [],
+    gameEvents: unknown[] = [],
 ): DecisionRecord {
     const player = scan.players[String(scan.playerUid)];
     if (!player) {
@@ -242,6 +277,7 @@ export function planTurn(
     const ownFleets = Object.values(scan.fleets).filter((fleet) => fleet.puid === scan.playerUid);
     const tacticalPlan = planTactics(scan, stars, ownFleets, rejected);
     const tacticalFleetUids = new Set(tacticalPlan.assignments.map((assignment) => assignment.fleet.uid));
+    const techTransferPlan = planTechTransfers(scan, diplomacyMessages, gameEvents, tacticalPlan);
     const carrierPlan = config.buildCarrier
         ? planCarrierCoverage(scan, stars, ownFleets, tacticalFleetUids)
         : { buildCount: 0, buildCost: 0 };
@@ -249,9 +285,12 @@ export function planTurn(
     let cash = safeNumber(player.cash, 0);
     const reserve = Math.max(
         Math.floor(cash * config.cashReserveRatio),
-        carrierPlan.buildCost,
+        carrierPlan.buildCost + techTransferPlan.reserveCost,
     );
     cash = buyInfrastructure(scan, player, stars, cash, reserve, config, commands, rejected);
+
+    commands.push(...techTransferPlan.commands);
+    cash -= techTransferPlan.reserveCost;
 
     executeTacticalRoutes(tacticalPlan, commands);
 
@@ -273,7 +312,11 @@ export function planTurn(
         });
     }
 
-    const diplomacyDrafts = draftDiplomacy(scan, diplomacyMessages);
+    const techDraftRecipients = new Set(techTransferPlan.diplomacyDrafts.map((draft) => draft.recipientUid));
+    const diplomacyDrafts = [
+        ...techTransferPlan.diplomacyDrafts,
+        ...draftDiplomacy(scan, diplomacyMessages, techDraftRecipients),
+    ];
 
     return {
         metadata: {
@@ -293,6 +336,7 @@ export function planTurn(
             ownedFleets: ownFleets.length,
             commandsPlanned: commands.length,
             diplomacyDraftsPlanned: diplomacyDrafts.length,
+            techTransfersPlanned: techTransferPlan.commands.length,
         },
         commands,
         diplomacyDrafts,
@@ -418,6 +462,219 @@ function applyInfraPurchase(candidate: InfraCandidate) {
     if (candidate.kind === "economy") candidate.star.e += 1;
     if (candidate.kind === "industry") candidate.star.i += 1;
     if (candidate.kind === "science") candidate.star.s += 1;
+}
+
+function planTechTransfers(
+    scan: ScanningData,
+    diplomacyMessages: unknown[],
+    gameEvents: unknown[],
+    tacticalPlan: TacticalPlan,
+): TechTransferPlan {
+    const player = scan.players[String(scan.playerUid)];
+    if (!player) return { commands: [], diplomacyDrafts: [], reserveCost: 0 };
+
+    const commands: PlannedCommand[] = [];
+    const diplomacyDrafts: DiplomacyDraft[] = [];
+    let reserveCost = 0;
+    const incomingAttackerUids = new Set(tacticalPlan.incomingAttacks.map((attack) => attack.attacker.uid));
+    const alreadyHandled = new Set<number>();
+
+    for (const receipt of receivedTechEvents(scan, gameEvents)) {
+        if (alreadyHandled.has(receipt.fromUid)) continue;
+        const sender = scan.players[String(receipt.fromUid)];
+        if (!sender) continue;
+
+        const history = diplomacyHistoryWith(scan.playerUid, receipt.fromUid, diplomacyMessages);
+        const threadKey = latestMessageFrom(receipt.fromUid, history)?.threadKey
+            ?? latestMessageFrom(scan.playerUid, history)?.threadKey;
+        const aggr = aggressionStatus(scan, receipt.fromUid, gameEvents, incomingAttackerUids);
+
+        if (aggr.incoming) {
+            diplomacyDrafts.push(techTradeDiplomacyDraft(
+                scan,
+                sender,
+                "Tech and an attack",
+                [
+                    `[[${sender.alias}]], I received your ${techName(receipt.techKind)} transfer.`,
+                    "Sending technology with one hand while attacking with the other is not cooperation.",
+                    "I will not reciprocate while your fleets are inbound. End the attack first, then we can discuss whether trust can be rebuilt.",
+                    `- [[${player.alias}]]`,
+                ].join("\n\n"),
+                "incoming attack blocks reciprocal tech transfer",
+                history,
+                threadKey,
+            ));
+            alreadyHandled.add(receipt.fromUid);
+            continue;
+        }
+
+        if (aggr.anyPast) {
+            diplomacyDrafts.push(techTradeDiplomacyDraft(
+                scan,
+                sender,
+                "Tech trade paused",
+                [
+                    `[[${sender.alias}]], I received your ${techName(receipt.techKind)} transfer.`,
+                    "Because there has already been combat between us, I am not sending technology back immediately.",
+                    "Maintain a longer period of peace and we can revisit tech trading once the border is demonstrably stable.",
+                    `- [[${player.alias}]]`,
+                ].join("\n\n"),
+                "past aggression blocks reciprocal tech transfer until longer peace",
+                history,
+                threadKey,
+            ));
+            alreadyHandled.add(receipt.fromUid);
+            continue;
+        }
+
+        const tradeDecision = agreedTechToSend(scan, sender, receipt, history);
+        if (!tradeDecision) continue;
+        const senderTech = sender.tech[String(tradeDecision.techKind)] as TechInfo | undefined;
+        const senderLevel = safeNumber(senderTech?.level, 0);
+        const nextLevel = senderLevel + 1;
+        const ourLevel = techLevel(player, tradeDecision.techKind);
+        if (nextLevel !== receipt.level || ourLevel < nextLevel) continue;
+
+        const cost = techTradeCost(scan, nextLevel);
+        if (safeNumber(player.cash, 0) - reserveCost < cost) continue;
+        commands.push({
+            kind: "tech_transfer",
+            order: `share_tech,${sender.uid},${tradeDecision.techKind}`,
+            reason: `reciprocate ${techName(receipt.techKind)} level ${receipt.level} from ${sender.alias} with ${techName(tradeDecision.techKind)} level ${nextLevel}; ${tradeDecision.reason}`,
+        });
+        reserveCost += cost;
+        alreadyHandled.add(receipt.fromUid);
+    }
+
+    return { commands, diplomacyDrafts, reserveCost };
+}
+
+function receivedTechEvents(scan: ScanningData, gameEvents: unknown[]): SharedTechnologyEvent[] {
+    const outbound = sentTechEvents(scan, gameEvents);
+    return sharedTechEvents(gameEvents)
+        .filter((event) => event.toUid === scan.playerUid && event.fromUid !== scan.playerUid)
+        .filter((event) => !outbound.some((sent) => sent.toUid === event.fromUid && sent.tick >= event.tick))
+        .sort((a, b) => b.tick - a.tick || b.level - a.level);
+}
+
+function sentTechEvents(scan: ScanningData, gameEvents: unknown[]) {
+    return sharedTechEvents(gameEvents)
+        .filter((event) => event.fromUid === scan.playerUid);
+}
+
+function sharedTechEvents(gameEvents: unknown[]): SharedTechnologyEvent[] {
+    return gameEvents
+        .map((event) => {
+            const payload = (event as GameEvent).payload;
+            if (payload?.template !== "shared_technology") return undefined;
+            const tick = numeric(payload.tick);
+            const fromUid = numeric(payload.from_puid);
+            const toUid = numeric(payload.to_puid);
+            const techKind = techKindValue(payload.tech ?? payload.name);
+            const level = numeric(payload.level);
+            if (tick === undefined || fromUid === undefined || toUid === undefined || techKind === undefined || level === undefined) {
+                return undefined;
+            }
+            return { tick, fromUid, toUid, techKind, level };
+        })
+        .filter((event): event is SharedTechnologyEvent => Boolean(event));
+}
+
+function aggressionStatus(
+    scan: ScanningData,
+    otherUid: number,
+    gameEvents: unknown[],
+    incomingAttackerUids: Set<number>,
+) {
+    const aggressionTicks = gameEvents
+        .map((event) => aggressionTickAgainstUs(scan, otherUid, event))
+        .filter((tick): tick is number => tick !== undefined);
+    return {
+        incoming: incomingAttackerUids.has(otherUid),
+        recent: aggressionTicks.some((tick) => scan.tick - tick <= 30),
+        anyPast: aggressionTicks.length > 0,
+    };
+}
+
+function aggressionTickAgainstUs(scan: ScanningData, otherUid: number, event: unknown) {
+    const payload = (event as GameEvent).payload;
+    if (payload?.template !== "combat_mk_ii") return undefined;
+    const tick = numeric(payload.tick);
+    if (tick === undefined) return undefined;
+    if (combatantsInclude(payload.attackers, otherUid) && combatantsInclude(payload.defenders, scan.playerUid)) {
+        return tick;
+    }
+    return undefined;
+}
+
+function combatantsInclude(value: unknown, uid: number) {
+    if (!value || typeof value !== "object") return false;
+    return Object.values(value as Record<string, unknown>).some((entry) => {
+        if (!entry || typeof entry !== "object") return false;
+        return numeric((entry as { puid?: unknown }).puid) === uid;
+    });
+}
+
+function agreedTechToSend(
+    scan: ScanningData,
+    sender: Player,
+    receipt: SharedTechnologyEvent,
+    history: DiplomacyEvent[],
+): TechTradeDecision | undefined {
+    const text = history.map((event) => event.body ?? "").join("\n").toLowerCase();
+    const requested = requestedTechKinds(text);
+    for (const techKind of requested) {
+        if (canSendEquivalentLevel(scan, sender, techKind, receipt.level)) {
+            return { techKind, reason: "thread names this technology as our side of the trade" };
+        }
+    }
+    return undefined;
+}
+
+function requestedTechKinds(text: string) {
+    const kinds: number[] = [];
+    for (const [kind, aliases] of techAliases()) {
+        if (aliases.some((alias) => text.includes(alias))) {
+            kinds.push(kind);
+        }
+    }
+    return kinds;
+}
+
+function canSendEquivalentLevel(scan: ScanningData, recipient: Player, techKind: number, level: number) {
+    const player = scan.players[String(scan.playerUid)];
+    if (!player) return false;
+    const recipientLevel = safeNumber((recipient.tech[String(techKind)] as TechInfo | undefined)?.level, 0);
+    return recipientLevel + 1 === level && techLevel(player, techKind) >= level;
+}
+
+function techTradeDiplomacyDraft(
+    scan: ScanningData,
+    recipient: Player,
+    subject: string,
+    body: string,
+    reason: string,
+    history: DiplomacyEvent[],
+    threadKey?: string,
+): DiplomacyDraft {
+    const player = scan.players[String(scan.playerUid)];
+    const draft: DiplomacyDraft = {
+        recipientUid: recipient.uid,
+        recipientAlias: recipient.alias,
+        recipientColor: recipient.color,
+        fromColor: playerColorStyle(player?.color ?? 0),
+        friendly: false,
+        subject,
+        body,
+        reason,
+    };
+    if (history.length > 0) draft.context = threadContext(history, scan.playerUid, recipient.alias);
+    if (threadKey) draft.threadKey = threadKey;
+    return draft;
+}
+
+function techTradeCost(scan: ScanningData, level: number) {
+    return Math.floor(level * scan.config.tradeCost);
 }
 
 function planTactics(
@@ -994,21 +1251,23 @@ function ownedScannedStars(scan: ScanningData) {
         .filter((star): star is ScannedStar => isScanned(star) && star.puid === scan.playerUid);
 }
 
-function draftDiplomacy(scan: ScanningData, messages: unknown[]): DiplomacyDraft[] {
+function draftDiplomacy(scan: ScanningData, messages: unknown[], suppressedRecipients = new Set<number>()): DiplomacyDraft[] {
     const player = scan.players[String(scan.playerUid)];
     if (!player) return [];
 
-    const attackDrafts = draftAttackObjections(scan, messages);
+    const attackDrafts = draftAttackObjections(scan, messages)
+        .filter((draft) => !suppressedRecipients.has(draft.recipientUid));
     const objectedTo = new Set(attackDrafts.map((draft) => draft.recipientUid));
     const techDrafts = neighboringEmpires(scan).flatMap((neighbor) => {
+        if (suppressedRecipients.has(neighbor.uid)) return [];
         if (objectedTo.has(neighbor.uid)) return [];
         const history = diplomacyHistoryWith(scan.playerUid, neighbor.uid, messages);
         const friendly = hasFastReply(scan.playerUid, neighbor.uid, history);
         const latestInbound = latestMessageFrom(neighbor.uid, history);
         const latestOutbound = latestMessageFrom(scan.playerUid, history);
-        const responding = friendly
-            && latestInbound !== undefined
+        const unansweredInbound = latestInbound !== undefined
             && (latestOutbound === undefined || latestInbound.created > latestOutbound.created);
+        const responding = unansweredInbound && (friendly || latestOutbound === undefined);
         if (history.length > 0 && !responding) {
             return [];
         }
@@ -1217,14 +1476,21 @@ function diplomacyBody(myAlias: string, theirAlias: string, research: string, re
     if (responding && latestInboundBody) {
         const wantsManufacturing = /manufacturing/i.test(latestInboundBody);
         const asksWeapons = /weapons/i.test(latestInboundBody);
-        const specifics = wantsManufacturing || asksWeapons
-            ? "Your proposal makes sense: you focus Manufacturing, I will continue Weapons, and we can exchange when each completes."
-            : "Your proposal makes sense; we can coordinate research paths and exchange finished techs when they are ready.";
+        if (wantsManufacturing && asksWeapons) {
+            return [
+                `Hi ${npLink(theirAlias)}, thanks for the quick reply.`,
+                "Your proposal makes sense: you focus Manufacturing, I will continue Weapons, and we can exchange when each completes.",
+                `I am currently researching ${research}, so I will keep that on track.`,
+                "Please send Manufacturing when it completes, and I will reciprocate with Weapons as soon as it is available.",
+                `- ${npLink(myAlias)}`,
+            ].join("\n\n");
+        }
+
         return [
-            `Hi ${npLink(theirAlias)}, thanks for the quick reply.`,
-            specifics,
-            `I am currently researching ${research}, so I will keep that on track.`,
-            "Please send Manufacturing when it completes, and I will reciprocate with Weapons as soon as it is available.",
+            `Hi ${npLink(theirAlias)}, thanks for reaching out.`,
+            "Your proposal makes sense; we can coordinate research paths and exchange finished techs when they are ready.",
+            `I am currently researching ${research}.`,
+            "Let me know which tech you would like to trade for, and what you plan to research next.",
             `- ${npLink(myAlias)}`,
         ].join("\n\n");
     }
@@ -1256,6 +1522,31 @@ function techName(kind: number) {
         [TECH.TERRAFORMING]: "Terraforming",
     };
     return names[kind] ?? `technology ${kind}`;
+}
+
+function techKindValue(value: unknown) {
+    const numericValue = numeric(value);
+    if (numericValue !== undefined) return numericValue;
+    if (typeof value !== "string") return undefined;
+    const normalized = value.toLowerCase().replace(/[^a-z]/g, "");
+    for (const [kind, aliases] of techAliases()) {
+        if (aliases.some((alias) => normalized === alias.replace(/[^a-z]/g, ""))) {
+            return kind;
+        }
+    }
+    return undefined;
+}
+
+function techAliases(): Array<[number, string[]]> {
+    return [
+        [TECH.BANKING, ["banking", "bank", "banks", "economy"]],
+        [TECH.RESEARCH, ["experimentation", "experiment", "research", "exp", "science"]],
+        [TECH.MANUFACTURING, ["manufacturing", "manufacture", "manu", "industry"]],
+        [TECH.PROPULSION, ["propulsion", "range", "hyperspace"]],
+        [TECH.SCANNING, ["scanning", "scan", "sensors"]],
+        [TECH.WEAPONS, ["weapons", "weapon", "weap", "combat"]],
+        [TECH.TERRAFORMING, ["terraforming", "terra", "resources"]],
+    ];
 }
 
 function timestampMs(value: unknown) {

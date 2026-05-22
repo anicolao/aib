@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import type { ApiResponse, ScanningData } from "./types.js";
-import { fetchAuthenticatedScan, fetchDiplomacyMessages, fetchScan, shouldSubmitTurnReady, submitCommands, submitDiplomacyDrafts, submitTurnReady, type AccountConfig, type ScanClientConfig } from "./client.js";
+import { fetchAuthenticatedScan, fetchDiplomacyMessages, fetchGameEvents, fetchScan, shouldSubmitTurnReady, submitCommands, submitDiplomacyDrafts, submitTurnReady, type AccountConfig, type ScanClientConfig } from "./client.js";
 import { planTurn, type DecisionRecord, type PlannerConfig } from "./planner.js";
 import type { SubmissionResult } from "./command.js";
 import { flavorDiplomacyDrafts } from "./diplomacy-style.js";
@@ -10,6 +10,7 @@ export interface TurnConfig {
     account?: AccountConfig;
     scanFile?: string;
     diplomacyMessages?: unknown[];
+    gameEvents?: unknown[];
     gemini?: {
         apiKey: string;
         model: string;
@@ -28,9 +29,10 @@ export async function runTurn(config: TurnConfig): Promise<TurnResult> {
         ? await readScanFile(config.scanFile)
         : await fetchLiveScan(config);
     const diplomacyMessages = config.diplomacyMessages ?? await readDiplomacyMessages(config);
+    const gameEvents = config.gameEvents ?? await readGameEvents(config);
 
     const decision = await flavorDiplomacyDrafts(
-        planTurn(scan, config.planner, !config.submit, diplomacyMessages),
+        planTurn(scan, config.planner, !config.submit, diplomacyMessages, gameEvents),
         config.gemini
             ? {
                 ...config.gemini,
@@ -48,6 +50,11 @@ export async function runTurn(config: TurnConfig): Promise<TurnResult> {
 async function readDiplomacyMessages(config: TurnConfig) {
     if (!config.account || !config.account.gameId) return [];
     return fetchDiplomacyMessages(config.account);
+}
+
+async function readGameEvents(config: TurnConfig) {
+    if (!config.account || !config.account.gameId) return [];
+    return fetchGameEvents(config.account);
 }
 
 async function fetchLiveScan(config: TurnConfig): Promise<ScanningData> {

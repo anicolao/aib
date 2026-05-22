@@ -98,6 +98,23 @@ export async function fetchDiplomacyMessages(config: AccountConfig, cookie?: str
     return messages;
 }
 
+export async function fetchGameEvents(config: AccountConfig, cookie?: string): Promise<unknown[]> {
+    if (!config.gameId) {
+        throw new Error("Game event fetch requires a game id");
+    }
+
+    const sessionCookie = cookie ?? (await createAccountSession(config)).cookie;
+    const response = await gamePost(config, "fetch_game_messages", {
+        group: "game_event",
+        count: "100",
+        offset: "0",
+    }, sessionCookie);
+    if (response.event !== "message:new_messages") {
+        throw new Error(`Unexpected game event response: ${JSON.stringify(response)}`);
+    }
+    return messageArray(response.report);
+}
+
 export async function listActiveGames(config: AccountConfig): Promise<AccountGame[]> {
     return activeGamesFromReport((await createAccountSession(config)).player);
 }

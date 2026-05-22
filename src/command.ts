@@ -2,6 +2,7 @@ export type CommandKind =
     | "batched_order"
     | "fleet_order"
     | "new_fleet"
+    | "tech_transfer"
     | "ready";
 
 export interface PlannedCommand {

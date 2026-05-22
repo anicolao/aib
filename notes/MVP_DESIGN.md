@@ -152,6 +152,20 @@ Diplomacy is draft-only in the MVP:
   `force_ready` so the turn is marked ready; this also happens when there were
   no orders or messages to issue
 
+Technology transfer is event-triggered:
+
+- fetch recent `game_event` messages in addition to diplomacy threads
+- when a `shared_technology` event gives us tech, look for an unsatisfied
+  reciprocal trade with the sender
+- send `share_tech,[recipientUid],[techKind]` only when the thread identifies
+  an equivalent-level tech we can send and the sender has not attacked us
+- if that sender has an inbound attack, draft an outraged note instead of
+  sending technology
+- if that sender attacked in the past but has no inbound attack, draft a note
+  saying we will consider trading after a longer period of peace
+- reserve the cash needed for planned tech transfers before infrastructure
+  spending
+
 ## Command Payloads
 
 The MVP emits client-compatible order strings:
@@ -161,6 +175,7 @@ The MVP emits client-compatible order strings:
 - `upgrade_science,[starUid],[cost]`
 - `new_fleet,[starUid],[ships]`
 - `add_fleet_orders,[fleetUid],[delays],[targets],[actions],[amounts],[loop]`
+- `share_tech,[recipientUid],[techKind]`
 - `force_ready`
 
 Infrastructure commands are submitted as one `/game_api/batched_orders` payload

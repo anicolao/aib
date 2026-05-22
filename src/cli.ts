@@ -4,6 +4,7 @@ import {
     activeGamesFromReport,
     createAccountSession,
     fetchDiplomacyMessages,
+    fetchGameEvents,
     fetchAuthenticatedScan,
     shouldSubmitTurnReady,
     submitCommands,
@@ -118,8 +119,13 @@ async function runDiscoveredTurns(account: AccountConfig, args: CliArgs, baseUrl
             baseUrl,
             gameId,
         }, session.cookie);
+        const gameEvents = await fetchGameEvents({
+            ...account,
+            baseUrl,
+            gameId,
+        }, session.cookie);
         const decision = await flavorDiplomacyDrafts(
-            planTurn(scan, planner, true, diplomacyMessages),
+            planTurn(scan, planner, true, diplomacyMessages, gameEvents),
             geminiConfig(gameId),
         );
         const gameAccount = {
