@@ -194,8 +194,10 @@ joined with `/`. Other commands are submitted individually to `/game_api/order`.
 
 ## Next Steps After MVP
 
-- Replace greedy infrastructure scoring with an exact optimizer.
-- Add multi-hop graph routing.
+- Use [POST_MVP_DESIGN.md](POST_MVP_DESIGN.md) as the next planner baseline.
+- Replace greedy infrastructure scoring with bounded integer optimization.
+- Replace direct-only routing with tactical tasks and graph search.
+- Limit carrier construction through an explicit logistics budget.
 - Persist scan and decision records.
 - Add stale-scan and duplicate-command protection.
 - Add deployment and Cloud Scheduler configuration for hourly invocation.

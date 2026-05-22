@@ -227,6 +227,11 @@ The first useful milestone is not "wins a game". It is a replayable turn where
 the bot explains its chosen purchases, routes, diplomacy actions, and omitted
 alternatives from a fixed scan.
 
+The post-MVP implementation plan is expanded in
+[POST_MVP_DESIGN.md](POST_MVP_DESIGN.md). That document translates this
+architecture into the next concrete planner rewrite: forecast state, bounded
+infrastructure search, tactical task search, and carrier budget policy.
+
 ## First Metric Decision
 
 The first operational metric should prioritize maximum frontier-relevant fleet
