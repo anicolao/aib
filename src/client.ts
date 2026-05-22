@@ -222,6 +222,31 @@ export async function submitDiplomacyDrafts(
     return { submitted: true, responses };
 }
 
+export async function submitTurnReady(
+    config: AccountConfig,
+    cookie?: string,
+): Promise<SubmissionResult> {
+    if (!config.gameId) {
+        throw new Error("Turn-ready submission requires a game id");
+    }
+
+    const sessionCookie = cookie ?? await login(config);
+    if (!cookie) await initPlayer(config, sessionCookie);
+
+    const response = await gamePost(config, "order", {
+        order: "force_ready",
+    }, sessionCookie);
+    if (response.event !== "order:ok" && response.event !== "order:full_universe") {
+        throw new Error(`force_ready failed: ${JSON.stringify(response)}`);
+    }
+    return { submitted: true, responses: [response] };
+}
+
+export function shouldSubmitTurnReady(scan: ScanningData) {
+    const player = scan.players[String(scan.playerUid)];
+    return scan.turnBased === 1 && player?.ready !== 1;
+}
+
 function ensureMessageSubmissionSucceeded(response: { event: string; report: unknown }) {
     if (!response.event.startsWith("message:") || response.event.includes("error")) {
         throw new Error(`Diplomacy submission failed: ${JSON.stringify(response)}`);

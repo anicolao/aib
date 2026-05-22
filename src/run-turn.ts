@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import type { ApiResponse, ScanningData } from "./types.js";
-import { fetchAuthenticatedScan, fetchDiplomacyMessages, fetchScan, submitCommands, submitDiplomacyDrafts, type AccountConfig, type ScanClientConfig } from "./client.js";
+import { fetchAuthenticatedScan, fetchDiplomacyMessages, fetchScan, shouldSubmitTurnReady, submitCommands, submitDiplomacyDrafts, submitTurnReady, type AccountConfig, type ScanClientConfig } from "./client.js";
 import { planTurn, type DecisionRecord, type PlannerConfig } from "./planner.js";
 import type { SubmissionResult } from "./command.js";
 import { flavorDiplomacyDrafts } from "./diplomacy-style.js";
@@ -39,7 +39,7 @@ export async function runTurn(config: TurnConfig): Promise<TurnResult> {
             : undefined,
     );
     const submission = config.submit
-        ? await submitLive(config, decision)
+        ? await submitLive(config, decision, scan)
         : { submitted: false, responses: [] };
 
     return { decision, submission };
@@ -63,17 +63,21 @@ async function fetchLiveScan(config: TurnConfig): Promise<ScanningData> {
     throw new Error("Live scan requires either an API key or account credentials");
 }
 
-async function submitLive(config: TurnConfig, decision: DecisionRecord) {
+async function submitLive(config: TurnConfig, decision: DecisionRecord, scan: ScanningData) {
     if (!config.account) {
         throw new Error("Live submission requires account credentials");
     }
     const commandSubmission = await submitCommands(config.account, decision.commands);
     const diplomacySubmission = await submitDiplomacyDrafts(config.account, decision.diplomacyDrafts);
+    const readySubmission = shouldSubmitTurnReady(scan)
+        ? await submitTurnReady(config.account)
+        : { submitted: false, responses: [] };
     return {
-        submitted: commandSubmission.submitted || diplomacySubmission.submitted,
+        submitted: commandSubmission.submitted || diplomacySubmission.submitted || readySubmission.submitted,
         responses: [
             ...commandSubmission.responses,
             ...diplomacySubmission.responses,
+            ...readySubmission.responses,
         ],
     };
 }

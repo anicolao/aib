@@ -126,6 +126,9 @@ Diplomacy is draft-only in the MVP:
 - submit diplomacy drafts only when the turn is explicitly run with `--submit`;
   new outreach creates a diplomacy thread and follow-up replies are posted as
   message comments when a prior thread is known
+- in turn-based games, after all order and diplomacy submissions succeed, submit
+  `force_ready` so the turn is marked ready; this also happens when there were
+  no orders or messages to issue
 
 ## Command Payloads
 

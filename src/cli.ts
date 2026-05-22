@@ -5,8 +5,10 @@ import {
     createAccountSession,
     fetchDiplomacyMessages,
     fetchAuthenticatedScan,
+    shouldSubmitTurnReady,
     submitCommands,
     submitDiplomacyDrafts,
+    submitTurnReady,
     type AccountConfig,
     type AccountGame,
 } from "./client.js";
@@ -131,6 +133,9 @@ async function runDiscoveredTurns(account: AccountConfig, args: CliArgs, baseUrl
         const diplomacySubmission = args.submit
             ? await submitDiplomacyDrafts(gameAccount, decision.diplomacyDrafts, session.cookie)
             : { submitted: false, responses: [] };
+        const readySubmission = args.submit && shouldSubmitTurnReady(scan)
+            ? await submitTurnReady(gameAccount, session.cookie)
+            : { submitted: false, responses: [] };
         results.push({
             game: {
                 id: gameId,
@@ -139,10 +144,11 @@ async function runDiscoveredTurns(account: AccountConfig, args: CliArgs, baseUrl
             },
             decision,
             submission: {
-                submitted: commandSubmission.submitted || diplomacySubmission.submitted,
+                submitted: commandSubmission.submitted || diplomacySubmission.submitted || readySubmission.submitted,
                 responses: [
                     ...commandSubmission.responses,
                     ...diplomacySubmission.responses,
+                    ...readySubmission.responses,
                 ],
             },
         });
@@ -228,7 +234,7 @@ function printHelp() {
   npx ts-node src/cli.ts --scan-file api.sample.json
 
 Options:
-  --submit             Submit orders and diplomacy drafts after planning. Requires NP_USER and NP_PASSWD.
+  --submit             Submit orders, diplomacy drafts, and turn-ready after planning. Requires NP_USER and NP_PASSWD.
   --ready              Include force_ready for turn-based games.
   --no-build-carrier   Disable one-carrier build heuristic.
   --horizon TICKS      Planning horizon for infrastructure scoring.
