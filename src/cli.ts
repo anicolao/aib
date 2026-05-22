@@ -18,6 +18,8 @@ import { runTurn, type TurnConfig } from "./run-turn.js";
 import { planTurn, type DecisionRecord } from "./planner.js";
 import { flavorDiplomacyDrafts } from "./diplomacy-style.js";
 import { recordTurnInputs } from "./recorder.js";
+import { writeDebugMap } from "./debug-map.js";
+import type { ScanningData } from "./types.js";
 
 interface CliArgs {
     gameId?: string;
@@ -28,6 +30,7 @@ interface CliArgs {
     markReady: boolean;
     buildCarrier: boolean;
     json: boolean;
+    showMap: boolean;
     horizonTicks?: number;
 }
 
@@ -79,11 +82,14 @@ async function main() {
     if (args.json) {
         process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     } else {
-        printMarkdown(renderTurnSummaries([{
+        const summaries = [{
             game: { id: gameId ?? "scan-file", name: result.decision.metadata.gameName },
             decision: result.decision,
             submission: result.submission,
-        }]));
+            scan: result.scan,
+        }];
+        printMarkdown(renderTurnSummaries(summaries));
+        await outputDebugMaps(summaries, args);
     }
 }
 
@@ -179,12 +185,14 @@ async function runDiscoveredTurns(account: AccountConfig, args: CliArgs, baseUrl
                     ...readySubmission.responses,
                 ],
             },
+            scan,
         });
     }
     if (args.json) {
         process.stdout.write(`${JSON.stringify({ activeGameCount: games.length, results }, null, 2)}\n`);
     } else {
         printMarkdown(renderTurnSummaries(results));
+        await outputDebugMaps(results, args);
     }
 }
 
@@ -198,6 +206,7 @@ interface TurnSummaryInput {
     submission: {
         submitted: boolean;
     };
+    scan?: ScanningData;
 }
 
 function renderTurnSummaries(results: TurnSummaryInput[]) {
@@ -331,6 +340,32 @@ function printMarkdown(markdown: string) {
     }
 }
 
+async function outputDebugMaps(results: TurnSummaryInput[], args: CliArgs) {
+    if (!args.showMap || args.json) return;
+    for (const result of results) {
+        if (!result.scan) continue;
+        const mapOptions = {
+            gameId: result.game?.id ?? "scan-file",
+        };
+        if (process.env.AIB_RECORD_DIR) {
+            Object.assign(mapOptions, { rootDir: process.env.AIB_RECORD_DIR });
+        }
+        const path = await writeDebugMap(result.scan, result.decision, mapOptions);
+        process.stdout.write(`\nDebug map: ${path}\n`);
+        if (!shouldUseKittyGraphics()) continue;
+        const shown = spawnSync("kitty", ["+icat", path], { stdio: "inherit" });
+        if (shown.error || shown.status !== 0) {
+            process.stdout.write(`kitty +icat failed; open ${path} to inspect the map.\n`);
+        }
+    }
+}
+
+function shouldUseKittyGraphics() {
+    if (process.env.AIB_SHOW_MAP === "0") return false;
+    if (!process.stdout.isTTY) return false;
+    return Boolean(process.env.KITTY_WINDOW_ID) || process.env.TERM === "xterm-kitty";
+}
+
 function geminiConfig(gameId?: string) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return undefined;
@@ -369,6 +404,7 @@ function parseArgs(argv: string[]): CliArgs {
         markReady: process.env.AIB_MARK_READY === "1",
         buildCarrier: process.env.AIB_BUILD_CARRIER !== "0",
         json: process.env.AIB_JSON === "1",
+        showMap: process.env.AIB_SHOW_MAP !== "0",
     };
 
     for (let i = 0; i < argv.length; i += 1) {
@@ -381,6 +417,8 @@ function parseArgs(argv: string[]): CliArgs {
         else if (arg === "--ready") args.markReady = true;
         else if (arg === "--no-build-carrier") args.buildCarrier = false;
         else if (arg === "--json") args.json = true;
+        else if (arg === "--map") args.showMap = true;
+        else if (arg === "--no-map") args.showMap = false;
         else if (arg === "--horizon") args.horizonTicks = Number(requireValue(argv, ++i, arg));
         else if (arg === "--help") {
             printHelp();
@@ -423,12 +461,15 @@ Options:
   --ready              Include force_ready for turn-based games.
   --no-build-carrier   Disable one-carrier build heuristic.
   --horizon TICKS      Planning horizon for optimization. Defaults to 30.
+  --map                Write and display a debug map after the Markdown summary. Default unless AIB_SHOW_MAP=0.
+  --no-map             Disable debug map generation.
   --json               Print the full raw JSON result instead of a concise Markdown summary.
   --base-url URL       Defaults to NP_BASE_URL or https://np4.ironhelmet.com.
 
 Environment:
   AIB_RECORD_GAME=0    Disable per-game scan/event recording.
   AIB_RECORD_DIR=PATH  Store game-#### folders under PATH instead of the current directory.
+  AIB_SHOW_MAP=0       Disable debug map generation/display.
 `);
 }
 

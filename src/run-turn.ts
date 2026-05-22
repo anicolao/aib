@@ -25,6 +25,7 @@ export interface TurnConfig {
 export interface TurnResult {
     decision: DecisionRecord;
     submission: SubmissionResult;
+    scan: ScanningData;
 }
 
 export async function runTurn(config: TurnConfig): Promise<TurnResult> {
@@ -59,7 +60,12 @@ export async function runTurn(config: TurnConfig): Promise<TurnResult> {
         ? await submitLive(config, decision, scan, accountSession?.cookie)
         : { submitted: false, responses: [] };
 
-    return { decision, submission };
+    const result = { decision, submission } as TurnResult;
+    Object.defineProperty(result, "scan", {
+        value: scan,
+        enumerable: false,
+    });
+    return result;
 }
 
 async function readDiplomacyMessages(config: TurnConfig, cookie?: string) {
