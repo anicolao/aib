@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import type { ApiResponse, ScanningData } from "./types.js";
-import { fetchAuthenticatedScan, fetchDiplomacyMessages, fetchScan, submitCommands, type AccountConfig, type ScanClientConfig } from "./client.js";
+import { fetchAuthenticatedScan, fetchDiplomacyMessages, fetchScan, submitCommands, submitDiplomacyDrafts, type AccountConfig, type ScanClientConfig } from "./client.js";
 import { planTurn, type DecisionRecord, type PlannerConfig } from "./planner.js";
 import type { SubmissionResult } from "./command.js";
 import { flavorDiplomacyDrafts } from "./diplomacy-style.js";
@@ -67,7 +67,15 @@ async function submitLive(config: TurnConfig, decision: DecisionRecord) {
     if (!config.account) {
         throw new Error("Live submission requires account credentials");
     }
-    return submitCommands(config.account, decision.commands);
+    const commandSubmission = await submitCommands(config.account, decision.commands);
+    const diplomacySubmission = await submitDiplomacyDrafts(config.account, decision.diplomacyDrafts);
+    return {
+        submitted: commandSubmission.submitted || diplomacySubmission.submitted,
+        responses: [
+            ...commandSubmission.responses,
+            ...diplomacySubmission.responses,
+        ],
+    };
 }
 
 async function readScanFile(path: string): Promise<ScanningData> {

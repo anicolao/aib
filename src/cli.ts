@@ -5,6 +5,8 @@ import {
     createAccountSession,
     fetchDiplomacyMessages,
     fetchAuthenticatedScan,
+    submitCommands,
+    submitDiplomacyDrafts,
     type AccountConfig,
     type AccountGame,
 } from "./client.js";
@@ -32,10 +34,7 @@ async function main() {
     const account = accountConfig(baseUrl, gameId);
 
     if (!args.scanFile && !gameId && account) {
-        if (args.submit) {
-            throw new Error("Submitting after account game discovery is not supported; pass --game explicitly");
-        }
-        await runDiscoveredDryRuns(account, args, baseUrl);
+        await runDiscoveredTurns(account, args, baseUrl);
         return;
     }
 
@@ -95,7 +94,7 @@ function parseDotEnvValue(value: string) {
     return value;
 }
 
-async function runDiscoveredDryRuns(account: AccountConfig, args: CliArgs, baseUrl: string) {
+async function runDiscoveredTurns(account: AccountConfig, args: CliArgs, baseUrl: string) {
     const session = await createAccountSession(account);
     const games = activeGamesFromReport(session.player);
     const results = [];
@@ -121,6 +120,17 @@ async function runDiscoveredDryRuns(account: AccountConfig, args: CliArgs, baseU
             planTurn(scan, planner, true, diplomacyMessages),
             geminiConfig(gameId),
         );
+        const gameAccount = {
+            ...account,
+            baseUrl,
+            gameId,
+        };
+        const commandSubmission = args.submit
+            ? await submitCommands(gameAccount, decision.commands, session.cookie)
+            : { submitted: false, responses: [] };
+        const diplomacySubmission = args.submit
+            ? await submitDiplomacyDrafts(gameAccount, decision.diplomacyDrafts, session.cookie)
+            : { submitted: false, responses: [] };
         results.push({
             game: {
                 id: gameId,
@@ -128,7 +138,13 @@ async function runDiscoveredDryRuns(account: AccountConfig, args: CliArgs, baseU
                 status: game.status,
             },
             decision,
-            submission: { submitted: false, responses: [] },
+            submission: {
+                submitted: commandSubmission.submitted || diplomacySubmission.submitted,
+                responses: [
+                    ...commandSubmission.responses,
+                    ...diplomacySubmission.responses,
+                ],
+            },
         });
     }
     process.stdout.write(`${JSON.stringify({ activeGameCount: games.length, results }, null, 2)}\n`);
@@ -212,7 +228,7 @@ function printHelp() {
   npx ts-node src/cli.ts --scan-file api.sample.json
 
 Options:
-  --submit             Submit commands after planning. Requires NP_USER and NP_PASSWD.
+  --submit             Submit orders and diplomacy drafts after planning. Requires NP_USER and NP_PASSWD.
   --ready              Include force_ready for turn-based games.
   --no-build-carrier   Disable one-carrier build heuristic.
   --horizon TICKS      Planning horizon for infrastructure scoring.

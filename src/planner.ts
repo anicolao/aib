@@ -35,10 +35,13 @@ export interface DecisionRecord {
 export interface DiplomacyDraft {
     recipientUid: number;
     recipientAlias: string;
+    recipientColor: number;
+    fromColor: string;
     friendly: boolean;
     subject: string;
     body: string;
     reason: string;
+    threadKey?: string;
     persona?: string;
     plainSubject?: string;
     plainBody?: string;
@@ -97,6 +100,13 @@ interface DiplomacyComment {
         created?: unknown;
         body?: unknown;
     };
+}
+
+interface DiplomacyEvent {
+    created: number;
+    fromUid: number;
+    toUids: number[];
+    threadKey?: string;
 }
 
 const TECH = {
@@ -419,7 +429,7 @@ function draftDiplomacy(scan: ScanningData, messages: unknown[]): DiplomacyDraft
     const player = scan.players[String(scan.playerUid)];
     if (!player) return [];
 
-    return neighboringEmpires(scan).map((neighbor) => {
+    return neighboringEmpires(scan).flatMap((neighbor) => {
         const history = diplomacyHistoryWith(scan.playerUid, neighbor.uid, messages);
         const friendly = hasFastReply(scan.playerUid, neighbor.uid, history);
         const latestInbound = latestMessageFrom(neighbor.uid, history);
@@ -427,11 +437,16 @@ function draftDiplomacy(scan: ScanningData, messages: unknown[]): DiplomacyDraft
         const responding = friendly
             && latestInbound !== undefined
             && (latestOutbound === undefined || latestInbound.created > latestOutbound.created);
+        if (history.length > 0 && !responding) {
+            return [];
+        }
         const research = techName(player.researching);
 
-        return {
+        const draft: DiplomacyDraft = {
             recipientUid: neighbor.uid,
             recipientAlias: neighbor.alias,
+            recipientColor: neighbor.color,
+            fromColor: playerColorStyle(player.color),
             friendly,
             subject: responding ? "Re: tech cooperation" : "Tech trading",
             body: diplomacyBody(player.alias, neighbor.alias, research, responding),
@@ -439,7 +454,16 @@ function draftDiplomacy(scan: ScanningData, messages: unknown[]): DiplomacyDraft
                 ? `${neighbor.alias} replied within 8h; draft keeps the tech-trade conversation moving`
                 : `${neighbor.alias} is a neighboring empire at ${neighbor.distance.toFixed(2)} ly; draft opens with research disclosure and tech-trade cooperation`,
         };
+        if (responding && latestInbound.threadKey) {
+            draft.threadKey = latestInbound.threadKey;
+        }
+        return [draft];
     });
+}
+
+function playerColorStyle(color: number) {
+    const colors = ["#0000ff", "#009fdf", "#40c000", "#ffc000", "#df5f00", "#c00000", "#c000c0", "#6000c0"];
+    return colors[color] ?? "#0000ff";
 }
 
 function neighboringEmpires(scan: ScanningData) {
@@ -452,6 +476,7 @@ function neighboringEmpires(scan: ScanningData) {
         .map((player) => ({
             uid: player.uid,
             alias: player.alias,
+            color: player.color,
             distance: nearestDistanceBetweenEmpires(myStars, Object.values(scan.stars).filter((star) => star.puid === player.uid)),
         }))
         .filter((neighbor) => Number.isFinite(neighbor.distance) && neighbor.distance <= maxNeighborDistance)
@@ -479,13 +504,18 @@ function diplomacyHistoryWith(myUid: number, theirUid: number, messages: unknown
 
 function messageEvents(message: unknown) {
     const root = message as DiplomacyMessage;
+    const threadKey = messageKey(message);
     const events = [messageEvent(root)]
         .filter((event): event is ReturnType<typeof messageEvent> & { created: number; fromUid: number; toUids: number[] } => Boolean(event));
     for (const comment of root.comments ?? []) {
         const event = commentEvent(comment, root);
         if (event) events.push(event);
     }
-    return events;
+    return events.map((event) => {
+        const withThread: DiplomacyEvent = event;
+        if (threadKey) withThread.threadKey = threadKey;
+        return withThread;
+    });
 }
 
 function messageEvent(message: DiplomacyMessage) {
@@ -504,7 +534,7 @@ function commentEvent(comment: DiplomacyComment, parent: DiplomacyMessage) {
     return { created, fromUid, toUids };
 }
 
-function hasFastReply(myUid: number, theirUid: number, history: { created: number; fromUid: number }[]) {
+function hasFastReply(myUid: number, theirUid: number, history: DiplomacyEvent[]) {
     for (const outbound of history.filter((event) => event.fromUid === myUid)) {
         const reply = history.find((event) => event.fromUid === theirUid && event.created > outbound.created);
         if (reply && reply.created - outbound.created <= 8 * 60 * 60 * 1000) {
@@ -514,7 +544,7 @@ function hasFastReply(myUid: number, theirUid: number, history: { created: numbe
     return false;
 }
 
-function latestMessageFrom(uid: number, history: { created: number; fromUid: number }[]) {
+function latestMessageFrom(uid: number, history: DiplomacyEvent[]) {
     return [...history].reverse().find((event) => event.fromUid === uid);
 }
 
@@ -573,6 +603,12 @@ function numericArray(value: unknown) {
         return value.split(",").map(numeric).filter((entry): entry is number => entry !== undefined);
     }
     return [];
+}
+
+function messageKey(message: unknown) {
+    if (!message || typeof message !== "object") return undefined;
+    const key = (message as { key?: unknown }).key;
+    return typeof key === "string" ? key : undefined;
 }
 
 function reachableNeutralTargets(

@@ -68,8 +68,8 @@ therefore supports two modes:
 
 - dry-run: `NP_USER` and `NP_PASSWD` can discover and scan active games, or
   `GAME_ID` plus `API_KEY` can fetch one public scan
-- submit: account `NP_USER` and `NP_PASSWD` are required, and the target
-  `GAME_ID` must be explicit
+- submit: account `NP_USER` and `NP_PASSWD` are required; with no explicit
+  `GAME_ID`, the CLI submits planned turns for every active discovered game
 
 Dry-run is the default. Submission should fail closed if credentials are
 missing.
@@ -123,7 +123,9 @@ Diplomacy is draft-only in the MVP:
   original sci-fi voices inspired by heroic or villainous space-opera and
   starship-diplomat roles
 - retain the plain draft beside the flavored draft for auditability
-- do not submit diplomacy messages automatically
+- submit diplomacy drafts only when the turn is explicitly run with `--submit`;
+  new outreach creates a diplomacy thread and follow-up replies are posted as
+  message comments when a prior thread is known
 
 ## Command Payloads
 
@@ -142,7 +144,8 @@ joined with `/`. Other commands are submitted individually to `/game_api/order`.
 ## Safety
 
 - Dry-run is default.
-- Live submission requires an explicit `--submit` flag or equivalent config.
+- Live order and diplomacy submission requires an explicit `--submit` flag or
+  equivalent config.
 - `force_ready` is not emitted unless explicitly requested.
 - Commands are generated from the latest scan loaded during the invocation.
 - The planner emits reasons for selected and rejected actions.
