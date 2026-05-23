@@ -244,7 +244,7 @@ function rankedCandidates(
         }
 
         const scienceCost = scienceCostFor(scan.config, star);
-        if (scienceCost <= spendable) {
+        if (scienceCost <= spendable && belowEmpireScienceCapAfterPurchase(stars)) {
             candidates.push(candidateFor(scan, player, stars, star, "science", scienceCost, horizonTicks, currentObjective, defenseGraph));
         }
     }
@@ -542,6 +542,12 @@ function researchProgressWithinHorizon(tech: TechInfo, science: number, horizonT
 
 function projectedEconomy(stars: SolverStar[]) {
     return stars.reduce((total, star) => total + Math.max(0, star.e), 0);
+}
+
+function belowEmpireScienceCapAfterPurchase(stars: SolverStar[]) {
+    const economy = projectedEconomy(stars);
+    const science = stars.reduce((total, star) => total + Math.max(0, star.s), 0);
+    return science + 1 <= economy / 4;
 }
 
 function scienceStrategicWeight(scan: ScanningData, player: Player) {
