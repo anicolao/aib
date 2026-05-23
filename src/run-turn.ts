@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { ApiResponse, ScanningData } from "./types.js";
 import { createAccountSession, fetchAuthenticatedScan, fetchDiplomacyMessages, fetchGameEvents, fetchScan, shouldSubmitTurnReady, submitCommands, submitDiplomacyDrafts, submitTurnReady, type AccountConfig, type ScanClientConfig } from "./client.js";
-import { planTurn, type DecisionRecord, type PlannerConfig } from "./planner.js";
+import { collectDiplomacyJudgementCandidates, planTurn, type DecisionRecord, type PlannerConfig } from "./planner.js";
 import type { SubmissionResult } from "./command.js";
 import { flavorDiplomacyDrafts } from "./diplomacy-style.js";
 import { recordTurnInputs } from "./recorder.js";
@@ -60,14 +60,16 @@ export async function runTurn(config: TurnConfig): Promise<TurnResult> {
         });
     }
 
+    const plainDecision = planTurn(scan, config.planner, !config.submit, diplomacyMessages, gameEvents);
     const decision = await flavorDiplomacyDrafts(
-        planTurn(scan, config.planner, !config.submit, diplomacyMessages, gameEvents),
+        plainDecision,
         config.gemini
             ? {
                 ...config.gemini,
                 gameId: config.scan.gameId,
             }
             : undefined,
+        collectDiplomacyJudgementCandidates(scan, diplomacyMessages, plainDecision.diplomacyDrafts, plainDecision.damageTickSolver.selectedResearchKind),
     );
     const submission = config.submit
         ? await submitLive(config, decision, scan, accountSession?.cookie)

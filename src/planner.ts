@@ -58,6 +58,20 @@ export interface DiplomacyDraft {
     skipFlavor?: boolean;
 }
 
+export interface DiplomacyJudgementCandidate {
+    recipientUid: number;
+    recipientAlias: string;
+    recipientColor: number;
+    fromColor: string;
+    friendly: boolean;
+    subject: string;
+    context: string;
+    latestInboundBody: string;
+    threadKey?: string;
+    plannedResearchKind: number;
+    plannedResearchName: string;
+}
+
 interface MutableStar extends ScannedStar {
     frontierWeight: number;
 }
@@ -3029,6 +3043,45 @@ function draftDiplomacy(scan: ScanningData, messages: unknown[], suppressedRecip
         return [draft];
     });
     return [...attackDrafts, ...techDrafts];
+}
+
+export function collectDiplomacyJudgementCandidates(
+    scan: ScanningData,
+    messages: unknown[],
+    existingDrafts: DiplomacyDraft[] = [],
+    plannedResearchKind?: number,
+): DiplomacyJudgementCandidate[] {
+    const player = scan.players[String(scan.playerUid)];
+    if (!player) return [];
+
+    const existingResponses = new Set(existingDrafts.map((draft) => `${draft.recipientUid}:${draft.threadKey ?? ""}`));
+    const researchKind = plannedResearchKind ?? player.researching;
+    return Object.values(scan.players)
+        .filter((candidate) => candidate.uid !== scan.playerUid && activePlayer(scan, candidate.uid))
+        .flatMap((candidate) => {
+            const history = diplomacyHistoryWith(scan.playerUid, candidate.uid, messages);
+            const latestInbound = latestMessageFrom(candidate.uid, history);
+            const latestOutbound = latestMessageFrom(scan.playerUid, history);
+            if (!latestInbound?.body) return [];
+            if (latestOutbound !== undefined && latestOutbound.created >= latestInbound.created) return [];
+            const responseKey = `${candidate.uid}:${latestInbound.threadKey ?? ""}`;
+            const recipientAlreadyHasDraft = existingDrafts.some((draft) => draft.recipientUid === candidate.uid);
+            if (existingResponses.has(responseKey) || recipientAlreadyHasDraft) return [];
+            const judgement: DiplomacyJudgementCandidate = {
+                recipientUid: candidate.uid,
+                recipientAlias: candidate.alias,
+                recipientColor: candidate.color,
+                fromColor: playerColorStyle(player.color),
+                friendly: hasFastReply(scan.playerUid, candidate.uid, history),
+                subject: "Re: tech cooperation",
+                context: threadContext(history, scan.playerUid, candidate.alias),
+                latestInboundBody: latestInbound.body,
+                plannedResearchKind: researchKind,
+                plannedResearchName: techName(researchKind),
+            };
+            if (latestInbound.threadKey) judgement.threadKey = latestInbound.threadKey;
+            return [judgement];
+        });
 }
 
 function draftAttackObjections(scan: ScanningData, messages: unknown[]): DiplomacyDraft[] {

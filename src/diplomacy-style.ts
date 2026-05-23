@@ -1,6 +1,6 @@
-import type { DecisionRecord, DiplomacyDraft } from "./planner.js";
+import type { DecisionRecord, DiplomacyDraft, DiplomacyJudgementCandidate } from "./planner.js";
 
-interface GeminiConfig {
+export interface GeminiConfig {
     apiKey: string;
     model: string;
     gameId: string;
@@ -30,17 +30,27 @@ const PERSONAS: Persona[] = [
     },
 ];
 
-export async function flavorDiplomacyDrafts(decision: DecisionRecord, config?: GeminiConfig): Promise<DecisionRecord> {
-    if (!config?.apiKey || decision.diplomacyDrafts.length === 0) {
+export async function flavorDiplomacyDrafts(
+    decision: DecisionRecord,
+    config?: GeminiConfig,
+    judgementCandidates: DiplomacyJudgementCandidate[] = [],
+): Promise<DecisionRecord> {
+    if (!config?.apiKey) {
         return decision;
     }
 
+    const judgedDecision = judgementCandidates.length > 0
+        ? await addJudgedDiplomacyDrafts(decision, judgementCandidates, config)
+        : decision;
+    if (judgedDecision.diplomacyDrafts.length === 0) {
+        return judgedDecision;
+    }
     const persona = personaFor(config.gameId, decision.metadata.playerUid);
     const diplomacyDrafts = await Promise.all(
-        decision.diplomacyDrafts.map((draft) => flavorDraft(draft, persona, config)),
+        judgedDecision.diplomacyDrafts.map((draft) => flavorDraft(draft, persona, config)),
     );
     return {
-        ...decision,
+        ...judgedDecision,
         diplomacyDrafts,
     };
 }
@@ -81,6 +91,92 @@ async function flavorDraft(draft: DiplomacyDraft, persona: Persona, config: Gemi
             persona: persona.label,
             flavorError: error instanceof Error ? error.message : String(error),
         };
+    }
+}
+
+async function addJudgedDiplomacyDrafts(
+    decision: DecisionRecord,
+    candidates: DiplomacyJudgementCandidate[],
+    config: GeminiConfig,
+): Promise<DecisionRecord> {
+    const assessments = await Promise.all(candidates.map((candidate) => assessInboundDiplomacy(candidate, config)));
+    const addedDrafts: DiplomacyDraft[] = [];
+    const rejected = [...decision.rejected];
+    for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = candidates[index];
+        const assessment = assessments[index];
+        if (!candidate || !assessment) continue;
+        if ("error" in assessment) {
+            rejected.push(`LLM diplomacy judgement failed for ${candidate.recipientAlias}: ${assessment.error}`);
+            continue;
+        }
+        if (!assessment.shouldRespond) {
+            rejected.push(`LLM diplomacy judgement skipped ${candidate.recipientAlias}: ${assessment.reason}`);
+            continue;
+        }
+        const draft: DiplomacyDraft = {
+            recipientUid: candidate.recipientUid,
+            recipientAlias: candidate.recipientAlias,
+            recipientColor: candidate.recipientColor,
+            fromColor: candidate.fromColor,
+            friendly: candidate.friendly,
+            subject: candidate.subject,
+            body: assessment.body,
+            reason: `LLM judged inbound diplomacy from ${candidate.recipientAlias} needs response: ${assessment.reason}`,
+            context: candidate.context,
+        };
+        if (candidate.threadKey) draft.threadKey = candidate.threadKey;
+        addedDrafts.push(draft);
+    }
+    if (addedDrafts.length === 0 && rejected.length === decision.rejected.length) {
+        return decision;
+    }
+    return {
+        ...decision,
+        summary: {
+            ...decision.summary,
+            diplomacyDraftsPlanned: decision.summary.diplomacyDraftsPlanned + addedDrafts.length,
+        },
+        diplomacyDrafts: [...decision.diplomacyDrafts, ...addedDrafts],
+        rejected,
+    };
+}
+
+async function assessInboundDiplomacy(candidate: DiplomacyJudgementCandidate, config: GeminiConfig): Promise<JudgementResult | { error: string }> {
+    try {
+        const response = await fetch(geminiUrl(config), {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "x-goog-api-key": config.apiKey,
+            },
+            body: JSON.stringify({
+                contents: [
+                    {
+                        role: "user",
+                        parts: [{ text: judgementPrompt(candidate) }],
+                    },
+                ],
+                generationConfig: {
+                    temperature: 0.2,
+                    maxOutputTokens: 512,
+                    responseMimeType: "application/json",
+                    thinkingConfig: {
+                        thinkingBudget: 0,
+                    },
+                },
+            }),
+        });
+        const text = await response.text();
+        if (!response.ok) {
+            throw new Error(`Gemini HTTP ${response.status}: ${text.slice(0, 300)}`);
+        }
+        const parsed = JSON.parse(text) as GeminiResponse;
+        const output = parsed.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("").trim();
+        if (!output) throw new Error("Gemini returned no judgement text");
+        return parseJudgement(output);
+    } catch (error) {
+        return { error: error instanceof Error ? error.message : String(error) };
     }
 }
 
@@ -155,6 +251,51 @@ Plain body:
 ${draft.body}`;
 }
 
+function judgementPrompt(candidate: DiplomacyJudgementCandidate) {
+    return `Assess this Neptune's Pride diplomacy thread and decide whether we should respond now.
+
+Use judgement. A response is warranted when the other player proposes or requests a concrete change, asks a direct question that affects coordination, suggests a trade/research plan, asks us to change research, proposes borders/peace/compensation, or raises an objection needing an answer.
+
+Do not respond just to thanks, appreciation, vague goodwill, repeated generic trade chatter, or a message that only restates an agreement already made.
+
+If responding, write a concise plain draft that answers the latest inbound message specifically. It may agree, disagree, propose an alternative, or ask one clarifying question. Do not invent promises, alliances, threats, tech transfers, or military actions not supported by the context. Do not claim, request, or imply that in-flight carriers can be recalled, redirected, diverted, turned around, or stopped; once launched, carriers cannot be redirected. When discussing attacks, ask instead for no reinforcements, no follow-up attacks, compensation, or border talks. Use Neptune's Pride links with [[ ]] around player and star names. Address only [[${candidate.recipientAlias}]].
+
+Our current planned research: ${candidate.plannedResearchName}
+
+Thread context, oldest to newest:
+${candidate.context}
+
+Latest inbound message:
+${candidate.latestInboundBody}
+
+Return strict JSON only with this shape:
+{
+  "shouldRespond": true,
+  "reason": "short reason",
+  "subject": "unused; set to an empty string",
+  "body": "message body if shouldRespond is true, otherwise empty string"
+}`;
+}
+
+function parseJudgement(output: string): JudgementResult {
+    const parsed = JSON.parse(stripJsonFence(output)) as Partial<JudgementResult>;
+    const shouldRespond = parsed.shouldRespond === true;
+    const reason = cleanOneLine(typeof parsed.reason === "string" ? parsed.reason : "no reason provided", 180);
+    const subject = cleanOneLine(typeof parsed.subject === "string" && parsed.subject.trim() ? parsed.subject : "Re: tech cooperation", 80);
+    const body = typeof parsed.body === "string" ? cleanBody(parsed.body) : "";
+    if (shouldRespond && !body) {
+        throw new Error("Gemini judgement requested a response without a body");
+    }
+    return { shouldRespond, reason, subject, body };
+}
+
+function stripJsonFence(value: string) {
+    return value
+        .replace(/^```(?:json)?\s*/i, "")
+        .replace(/\s*```$/i, "")
+        .trim();
+}
+
 function cleanOneLine(value: string, maxLength: number) {
     return value.replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
@@ -171,4 +312,11 @@ interface GeminiResponse {
             }>;
         };
     }>;
+}
+
+interface JudgementResult {
+    shouldRespond: boolean;
+    reason: string;
+    subject: string;
+    body: string;
 }

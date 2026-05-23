@@ -15,7 +15,7 @@ import {
     type AccountGame,
 } from "./client.js";
 import { runTurn, type TurnConfig } from "./run-turn.js";
-import { planTurn, type DecisionRecord } from "./planner.js";
+import { collectDiplomacyJudgementCandidates, planTurn, type DecisionRecord } from "./planner.js";
 import { flavorDiplomacyDrafts } from "./diplomacy-style.js";
 import { recordTurnInputs } from "./recorder.js";
 import { writeDebugMap } from "./debug-map.js";
@@ -174,9 +174,11 @@ async function runDiscoveredTurns(account: AccountConfig, args: CliArgs, baseUrl
                 rootDir: process.env.AIB_RECORD_DIR,
             });
         }
+        const plainDecision = planTurn(scan, planner, true, diplomacyMessages, gameEvents);
         const decision = await flavorDiplomacyDrafts(
-            planTurn(scan, planner, true, diplomacyMessages, gameEvents),
+            plainDecision,
             geminiConfig(gameId),
+            collectDiplomacyJudgementCandidates(scan, diplomacyMessages, plainDecision.diplomacyDrafts, plainDecision.damageTickSolver.selectedResearchKind),
         );
         const gameAccount = {
             ...account,
