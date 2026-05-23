@@ -82,6 +82,15 @@ async function main() {
     if (args.json) {
         process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     } else {
+        if (!result.decision) {
+            printMarkdown(renderTurnSummaries([{
+                game: { id: gameId ?? "scan-file", name: result.scan.name },
+                submission: result.submission,
+                scan: result.scan,
+                skipped: result.skipped ?? "Skipped.",
+            }]));
+            return;
+        }
         const summaries = [{
             game: { id: gameId ?? "scan-file", name: result.decision.metadata.gameName },
             decision: result.decision,
@@ -133,6 +142,19 @@ async function runDiscoveredTurns(account: AccountConfig, args: CliArgs, baseUrl
             baseUrl,
             gameId,
         }, session.cookie);
+        if (args.submit && alreadyReadyForTurn(scan)) {
+            results.push({
+                game: {
+                    id: gameId,
+                    name: game.config?.name ?? game.name ?? scan.name,
+                    status: game.status,
+                },
+                submission: { submitted: false },
+                scan,
+                skipped: "turn-based game is already submitted",
+            });
+            continue;
+        }
         const diplomacyMessages = await fetchDiplomacyMessages({
             ...account,
             baseUrl,
@@ -202,11 +224,12 @@ interface TurnSummaryInput {
         name?: unknown;
         status?: unknown;
     };
-    decision: DecisionRecord;
+    decision?: DecisionRecord;
     submission: {
         submitted: boolean;
     };
     scan?: ScanningData;
+    skipped?: string;
 }
 
 function renderTurnSummaries(results: TurnSummaryInput[]) {
@@ -223,6 +246,7 @@ function renderTurnSummaries(results: TurnSummaryInput[]) {
 
 function renderTurnSummary(result: TurnSummaryInput) {
     const decision = result.decision;
+    if (!decision) return renderSkippedTurnSummary(result);
     const title = stringValue(result.game?.name) ?? decision.metadata.gameName ?? "Unknown game";
     const gameId = result.game?.id ? ` (${result.game.id})` : "";
     const mode = decision.metadata.dryRun ? "dry run" : "submit";
@@ -243,6 +267,22 @@ function renderTurnSummary(result: TurnSummaryInput) {
         "",
     ];
     return lines;
+}
+
+function renderSkippedTurnSummary(result: TurnSummaryInput) {
+    const title = stringValue(result.game?.name) ?? result.scan?.name ?? "Unknown game";
+    const gameId = result.game?.id ? ` (${result.game.id})` : "";
+    const tick = result.scan ? `Tick ${result.scan.tick}` : "Tick unknown";
+    return [
+        `## ${title}${gameId}`,
+        "",
+        `${tick} | skipped`,
+        "",
+        result.skipped ?? "Skipped.",
+        "",
+        "**Submitted:** already ready",
+        "",
+    ];
 }
 
 function renderCommands(decision: DecisionRecord) {
@@ -425,7 +465,7 @@ function printMarkdown(markdown: string) {
 async function outputDebugMaps(results: TurnSummaryInput[], args: CliArgs) {
     if (!args.showMap || args.json) return;
     for (const result of results) {
-        if (!result.scan) continue;
+        if (!result.scan || !result.decision) continue;
         const mapOptions = {
             gameId: result.game?.id ?? "scan-file",
         };
@@ -440,6 +480,11 @@ async function outputDebugMaps(results: TurnSummaryInput[], args: CliArgs) {
             process.stdout.write(`kitty +icat failed; open ${path} to inspect the map.\n`);
         }
     }
+}
+
+function alreadyReadyForTurn(scan: ScanningData) {
+    const player = scan.players[String(scan.playerUid)];
+    return scan.turnBased === 1 && player?.ready === 1;
 }
 
 function shouldUseKittyGraphics() {

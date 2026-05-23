@@ -23,9 +23,10 @@ export interface TurnConfig {
 }
 
 export interface TurnResult {
-    decision: DecisionRecord;
+    decision?: DecisionRecord;
     submission: SubmissionResult;
     scan: ScanningData;
+    skipped?: string;
 }
 
 export async function runTurn(config: TurnConfig): Promise<TurnResult> {
@@ -35,6 +36,18 @@ export async function runTurn(config: TurnConfig): Promise<TurnResult> {
     const scan = config.scanFile
         ? await readScanFile(config.scanFile)
         : await fetchLiveScan(config, accountSession?.cookie);
+    if (config.submit && alreadyReadyForTurn(scan)) {
+        const result: TurnResult = {
+            submission: { submitted: false, responses: [] },
+            scan,
+            skipped: "turn-based game is already submitted",
+        };
+        Object.defineProperty(result, "scan", {
+            value: scan,
+            enumerable: false,
+        });
+        return result;
+    }
     const diplomacyMessages = config.diplomacyMessages ?? await readDiplomacyMessages(config, accountSession?.cookie);
     const gameEvents = config.gameEvents ?? await readGameEvents(config, accountSession?.cookie);
     if (config.recordGame && !config.scanFile) {
@@ -66,6 +79,11 @@ export async function runTurn(config: TurnConfig): Promise<TurnResult> {
         enumerable: false,
     });
     return result;
+}
+
+function alreadyReadyForTurn(scan: ScanningData) {
+    const player = scan.players[String(scan.playerUid)];
+    return scan.turnBased === 1 && player?.ready === 1;
 }
 
 async function readDiplomacyMessages(config: TurnConfig, cookie?: string) {
