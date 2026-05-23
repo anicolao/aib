@@ -521,20 +521,40 @@ function terminalInfrastructureValue(
     const industry = projectedIndustry(stars);
     const science = projectedScience(stars);
     const industryBalance = targetBalance(industry, Math.max(1, economy * 0.5));
-    const scienceBalance = targetBalance(science, Math.max(1, economy * 0.25));
+    const scienceTarget = Math.max(1, economy * 0.25);
     const weaponsGap = Math.max(0, bestVisibleEnemyWeapons(scan) - techLevel(player, TECH.WEAPONS));
     const scienceUrgency = Math.min(1.5, weaponsGap / 8);
     const productionCycleValue = productionEventsWithin(scan, horizonTicks) * 0.8
         + Math.max(1, horizonTicks / Math.max(1, scan.productionRate)) * 0.35;
-    let total = economy * productionCycleValue;
+    let total = economy * productionCycleValue
+        + balancedUnitValue(stars, (star) => star.e, Number.POSITIVE_INFINITY, productionCycleValue * 1.8, (star) => defendabilityWeight(defenseGraph, star))
+        + balancedUnitValue(stars, (star) => star.s, scienceTarget, 42 + scienceUrgency * 10, (star) => defendabilityWeight(defenseGraph, star))
+        + balancedUnitValue(stars, (star) => star.s, Number.POSITIVE_INFINITY, 2, (star) => defendabilityWeight(defenseGraph, star));
     for (const star of stars) {
         const frontier = Math.max(0.35, Math.min(2.5, numeric(star.frontierWeight, 1)));
-        const defended = defendabilityWeight(defenseGraph, star);
-        total += star.e * defended * productionCycleValue * 1.8;
         total += infrastructureBookValue(scan.config, star, "industry") * (0.02 + industryBalance * (0.42 + frontier * 0.08));
-        total += star.s * defended * (scienceBalance * (42 + scienceUrgency * 10) + 2);
     }
     return total;
+}
+
+function balancedUnitValue(
+    stars: SolverStar[],
+    units: (star: SolverStar) => number,
+    target: number,
+    unitValue: number,
+    locationWeight: (star: SolverStar) => number,
+) {
+    const weights = stars.flatMap((star) => Array(Math.max(0, units(star))).fill(locationWeight(star)) as number[]);
+    return weights
+        .sort((a, b) => b - a)
+        .reduce((total, weight, index) => total + weight * unitValue * balanceMarginal(index, target), 0);
+}
+
+function balanceMarginal(index: number, target: number) {
+    if (!Number.isFinite(target)) return 1;
+    const ratio = index / Math.max(1, target);
+    if (ratio >= 1) return 0;
+    return 1 - ratio * ratio;
 }
 
 function defendabilityWeight(defenseGraph: DefenseGraphPlan | undefined, star: SolverStar) {
