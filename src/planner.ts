@@ -409,6 +409,7 @@ const FLEET_ORDER = {
 } as const;
 
 const NEUTRAL_CAPTURE_SHIPS = 5;
+const MIN_OPPORTUNISTIC_ENEMY_TARGET_VALUE = 25;
 const EXPANSION_SOURCE_GARRISON = 1;
 const CORE_LOGISTICS_MIN_BUILD_SURPLUS = 20;
 const MAX_CORE_LOGISTICS_CARRIER_BUILDS = 3;
@@ -2786,6 +2787,7 @@ function assignWinningAttacks(scan: ScanningData, ownFleets: Fleet[], assignedFl
     const attackedTargetUids = friendlyAttackTargetUids(scan, ownFleets);
     const enemyTargets = Object.values(scan.stars)
         .filter((star): star is ScannedStar => isScanned(star) && star.puid > 0 && star.puid !== scan.playerUid)
+        .filter(isWorthOpportunisticEnemyAttack)
         .sort((a, b) => territoryValue(b) - territoryValue(a) || b.st - a.st || a.uid - b.uid);
     const range = rangeValue(scan.players[String(scan.playerUid)]);
     const margin = offensiveBattleMargin(scan);
@@ -2817,6 +2819,10 @@ function assignWinningAttacks(scan: ScanningData, ownFleets: Fleet[], assignedFl
         });
     }
     return assignments;
+}
+
+function isWorthOpportunisticEnemyAttack(star: ScannedStar) {
+    return territoryValue(star) >= MIN_OPPORTUNISTIC_ENEMY_TARGET_VALUE;
 }
 
 function friendlyAttackTargetUids(scan: ScanningData, ownFleets: Fleet[]) {
