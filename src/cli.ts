@@ -288,10 +288,47 @@ function renderDefenseGraph(decision: DecisionRecord) {
         lines.push(`- Hub ${hub.hubStarName}: reserve ${hub.currentReserveShips}/${hub.reserveShipsRequired}, covers ${hub.coveredTargetNames.join(", ")}, value ${Math.round(hub.coverageValue)}.`);
     }
     if (graph.uncoveredTargetUids.length > 0) {
-        lines.push(`- Uncovered threatened stars: ${graph.uncoveredTargetUids.join(", ")}.`);
+        const uncoveredNames = graph.uncoveredTargetUids
+            .map((uid) => graph.starAnalyses.find((analysis) => analysis.starUid === uid)?.starName ?? String(uid))
+            .map((name) => `[[${name}]]`)
+            .join(", ");
+        lines.push(`- Uncovered threatened stars: ${uncoveredNames}.`);
+    }
+    if (graph.starAnalyses.length > 0) {
+        lines.push("");
+        lines.push("Territory analysis:");
+        for (const analysis of graph.starAnalyses) {
+            lines.push(`- [[#${decision.metadata.playerUid}]] [[${analysis.starName}]] ${analysis.economy}/${analysis.industry}/${analysis.science} ${analysis.ships} ships -> ${defenseAnalysisSummary(analysis)}.`);
+        }
     }
     lines.push("");
     return lines;
+}
+
+function defenseAnalysisSummary(analysis: DecisionRecord["defenseGraph"]["starAnalyses"][number]) {
+    const closest = analysis.closestThreat
+        ? `closest attacker is [[${analysis.closestThreat.originName}]] with ${analysis.closestThreat.attackerShips} ships, eta ${analysis.closestThreat.eta.toFixed(1)}, reaction ${analysis.closestThreat.reactionTicks.toFixed(1)}`
+        : "";
+    const defenders = analysis.defenderCandidates
+        .filter((candidate) => candidate.starUid !== analysis.starUid)
+        .map((candidate) => `[[${candidate.starName}]]`)
+        .join(", ");
+
+    if (analysis.classification === "interior") return "can't be attacked; interior star";
+    if (analysis.classification === "covered") {
+        const hub = analysis.assignedHubName ? `hub [[${analysis.assignedHubName}]]` : "no selected hub";
+        return [closest, defenders ? `can be defended from ${defenders}` : "self-defended only", hub].filter(Boolean).join("; ");
+    }
+    if (analysis.classification === "self_hub") {
+        const covered = analysis.reason.startsWith("selected as a hub")
+            ? `hub for ${analysis.reason.replace("selected as a hub covering ", "").split(", ").map((name) => `[[${name}]]`).join(", ")}`
+            : "hub for itself";
+        return [closest, covered].filter(Boolean).join("; ");
+    }
+    if (analysis.classification === "exposed_high_value") {
+        return [closest, "can't be defended; high value and should be its own hub"].filter(Boolean).join("; ");
+    }
+    return [closest, "can't be defended; low value"].filter(Boolean).join("; ");
 }
 
 function renderCombat(decision: DecisionRecord) {
