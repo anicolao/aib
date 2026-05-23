@@ -1332,10 +1332,13 @@ function executeCoreLogisticsShuttles(
         unavailableFleetUids.add(assignment.fleet.uid);
         assignment.source.st -= assignment.loadShips;
         const action = assignment.loadShips > 0 ? FLEET_ORDER.COLLECT : FLEET_ORDER.NOTHING;
+        const cargo = assignment.loadShips > 0
+            ? `loads ${assignment.loadShips} ships at ${assignment.source.n} and moves ${assignment.departureShips} ships`
+            : `continues with ${assignment.departureShips} ships from ${assignment.source.n}`;
         commands.push({
             kind: "fleet_order",
             order: `add_fleet_orders,${assignment.fleet.uid},0,${assignment.target.uid},${action},${assignment.loadShips},0`,
-            reason: `core logistics carrier ${assignment.fleet.uid} loads ${assignment.loadShips} ships at ${assignment.source.n} and moves ${assignment.departureShips} ships one hop to ${assignment.target.n} toward ${assignment.finalSink.n}; path ${assignment.pathNames.join(" -> ")}, eta ${assignment.eta.toFixed(1)} ticks, score ${assignment.score.toFixed(2)}`,
+            reason: `core logistics carrier ${assignment.fleet.uid} ${cargo} one hop to ${assignment.target.n} toward ${assignment.finalSink.n}; path ${assignment.pathNames.join(" -> ")}, eta ${assignment.eta.toFixed(1)} ticks, score ${assignment.score.toFixed(2)}`,
         });
     }
     if (assignments.length === 0) {
@@ -1362,14 +1365,16 @@ function assignCoreLogisticsShuttles(
     for (const fleet of idleCoreLogisticsCarriers(fleets, unavailableFleetUids)) {
         if (assignedFleetUids.has(fleet.uid)) continue;
         const source = stars.find((star) => star.uid === fleet.ouid);
-        if (!source || assignedSourceUids.has(source.uid)) continue;
+        if (!source) continue;
         const sourceAnalysis = defenseAnalysis.get(source.uid);
         if (sourceAnalysis?.classification !== "interior" || sourceAnalysis.closestThreat) continue;
-        const sourceSurplus = supplySourceSurplus(source, fleet, defenseGraph, defenseAnalysis);
-        if (sourceSurplus < NEUTRAL_CAPTURE_SHIPS) continue;
+        const sourceSurplus = assignedSourceUids.has(source.uid)
+            ? 0
+            : supplySourceSurplus(source, fleet, defenseGraph, defenseAnalysis);
+        if (sourceSurplus < NEUTRAL_CAPTURE_SHIPS && fleet.st < NEUTRAL_CAPTURE_SHIPS) continue;
         const assignment = bestCoreLogisticsShuttle(scan, stars, source, fleet, range, speed, horizonTicks, defenseGraph, defenseAnalysis, hubs, sourceSurplus);
         if (!assignment) continue;
-        assignedSourceUids.add(source.uid);
+        if (assignment.loadShips > 0) assignedSourceUids.add(source.uid);
         assignedFleetUids.add(fleet.uid);
         assignments.push(assignment);
     }
