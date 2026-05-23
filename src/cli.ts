@@ -67,7 +67,7 @@ async function main() {
         recordGame: shouldRecordGame(args),
         recordRoot: process.env.AIB_RECORD_DIR,
         planner: {
-            horizonTicks: args.horizonTicks ?? numberFromEnv("AIB_HORIZON_TICKS", 30),
+            horizonTicks: args.horizonTicks ?? numberFromEnv("AIB_HORIZON_TICKS", 60),
             cashReserveRatio: numberFromEnv("AIB_CASH_RESERVE_RATIO", 0.2),
             buildCarrier: args.buildCarrier,
             markReady: args.markReady,
@@ -132,7 +132,7 @@ async function runDiscoveredTurns(account: AccountConfig, args: CliArgs, baseUrl
     for (const game of games) {
         const gameId = accountGameId(game);
         const planner = {
-            horizonTicks: args.horizonTicks ?? numberFromEnv("AIB_HORIZON_TICKS", 30),
+            horizonTicks: args.horizonTicks ?? numberFromEnv("AIB_HORIZON_TICKS", 60),
             cashReserveRatio: numberFromEnv("AIB_CASH_RESERVE_RATIO", 0.2),
             buildCarrier: args.buildCarrier,
             markReady: args.markReady,
@@ -587,7 +587,7 @@ Options:
   --submit             Submit orders, diplomacy drafts, and turn-ready after planning. Requires NP_USER and NP_PASSWD.
   --ready              Include force_ready for turn-based games.
   --no-build-carrier   Disable one-carrier build heuristic.
-  --horizon TICKS      Planning horizon for optimization. Defaults to 30.
+  --horizon TICKS      Planning horizon for optimization. Defaults to 60.
   --map                Write and display a debug map after the Markdown summary. Default unless AIB_SHOW_MAP=0.
   --no-map             Disable debug map generation.
   --json               Print the full raw JSON result instead of a concise Markdown summary.
