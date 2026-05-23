@@ -68,7 +68,7 @@ async function main() {
         recordRoot: process.env.AIB_RECORD_DIR,
         planner: {
             horizonTicks: args.horizonTicks ?? numberFromEnv("AIB_HORIZON_TICKS", 60),
-            cashReserveRatio: numberFromEnv("AIB_CASH_RESERVE_RATIO", 0.2),
+            cashReserveRatio: numberFromEnv("AIB_CASH_RESERVE_RATIO", 0),
             buildCarrier: args.buildCarrier,
             markReady: args.markReady,
         },
@@ -133,7 +133,7 @@ async function runDiscoveredTurns(account: AccountConfig, args: CliArgs, baseUrl
         const gameId = accountGameId(game);
         const planner = {
             horizonTicks: args.horizonTicks ?? numberFromEnv("AIB_HORIZON_TICKS", 60),
-            cashReserveRatio: numberFromEnv("AIB_CASH_RESERVE_RATIO", 0.2),
+            cashReserveRatio: numberFromEnv("AIB_CASH_RESERVE_RATIO", 0),
             buildCarrier: args.buildCarrier,
             markReady: args.markReady,
         };
@@ -289,16 +289,69 @@ function renderCommands(decision: DecisionRecord) {
     if (decision.commands.length === 0) {
         return ["### Orders", "", "No orders planned.", ""];
     }
+    const infrastructure = summarizeInfrastructureOrders(decision);
+    const commands = infrastructure.largeSummary
+        ? decision.commands.filter((command) => !isInfrastructureOrder(command.order))
+        : decision.commands;
     return [
         "### Orders",
         "",
-        ...decision.commands.map((command) => [
+        ...infrastructure.lines,
+        ...commands.map((command) => [
             `- \`${command.order}\``,
             `  ${command.reason}`,
             command.followUpReason ? `  Follow-up: ${command.followUpReason}` : undefined,
         ].filter((line): line is string => Boolean(line)).join("\n")),
         "",
     ];
+}
+
+function summarizeInfrastructureOrders(decision: DecisionRecord) {
+    const orders = decision.commands
+        .map((command) => ({ command, match: /^upgrade_(economy|industry|science),(\d+),(\d+)$/.exec(command.order) }))
+        .filter((entry): entry is { command: typeof decision.commands[number]; match: RegExpExecArray } => Boolean(entry.match));
+    if (orders.length <= 20) return { largeSummary: false, lines: [] };
+    const byKind = new Map<string, { count: number; cost: number }>();
+    const byStar = new Map<string, { count: number; cost: number }>();
+    for (const { command, match } of orders) {
+        const kind = match[1] ?? "unknown";
+        const starUid = match[2] ?? "unknown";
+        const cost = Number(match[3] ?? 0);
+        const kindEntry = byKind.get(kind) ?? { count: 0, cost: 0 };
+        kindEntry.count += 1;
+        kindEntry.cost += cost;
+        byKind.set(kind, kindEntry);
+        const starName = infrastructureStarName(command.reason) ?? `#${starUid}`;
+        const starEntry = byStar.get(starName) ?? { count: 0, cost: 0 };
+        starEntry.count += 1;
+        starEntry.cost += cost;
+        byStar.set(starName, starEntry);
+    }
+    const totalCost = orders.reduce((sum, entry) => sum + Number(entry.match[3] ?? 0), 0);
+    const kindSummary = [...byKind.entries()]
+        .sort((a, b) => b[1].cost - a[1].cost)
+        .map(([kind, entry]) => `${entry.count} ${kind} ($${entry.cost})`)
+        .join(", ");
+    const topStars = [...byStar.entries()]
+        .sort((a, b) => b[1].cost - a[1].cost)
+        .slice(0, 8)
+        .map(([star, entry]) => `${star}: ${entry.count} ($${entry.cost})`)
+        .join("; ");
+    return {
+        largeSummary: true,
+        lines: [
+            `- ${orders.length} infrastructure upgrades, $${totalCost} total: ${kindSummary}.`,
+            `  Top stars: ${topStars}.`,
+        ],
+    };
+}
+
+function isInfrastructureOrder(order: string) {
+    return /^upgrade_(economy|industry|science),/.test(order);
+}
+
+function infrastructureStarName(reason: string) {
+    return /^(?:economy|industry|science) at ([^ ]+)/.exec(reason)?.[1];
 }
 
 function renderDiplomacy(decision: DecisionRecord) {
@@ -324,7 +377,7 @@ function renderDamageTickSolver(decision: DecisionRecord) {
     const lines = [
         "### Damage/Tick Solver",
         "",
-        `Objective ${solver.baselineObjectiveValue.toFixed(2)} -> ${solver.objectiveValue.toFixed(2)} (${delta >= 0 ? "+" : ""}${delta.toFixed(2)}) over ${solver.horizonTicks} ticks.`,
+        `Mode: ${solver.solverMode ?? "legacy"}. Objective ${solver.baselineObjectiveValue.toFixed(2)} -> ${solver.objectiveValue.toFixed(2)} (${delta >= 0 ? "+" : ""}${delta.toFixed(2)}) over ${solver.horizonTicks} ticks.`,
         `Research: ${techName(research.currentResearchKind)} -> ${techName(research.selectedResearchKind)}; science ${research.currentScience} -> ${research.projectedScience}; Weapons ${research.currentWeapons} -> ${research.projectedWeaponsAtHorizon}.`,
         `Recommendation: ${research.recommendation}.`,
     ];

@@ -576,12 +576,12 @@ function buyInfrastructure(
         commands.push({
             kind: "batched_order",
             order: `upgrade_${purchase.kind},${purchase.starUid},${purchase.cost}`,
-            reason: `${purchase.kind} at ${purchase.starName} selected by damage/tick solver; ${purchase.reason}; utility ${purchase.utility.toFixed(2)}, score ${purchase.score.toFixed(4)}`,
+            reason: `${purchase.kind} at ${purchase.starName} selected by portfolio damage/tick solver; ${purchase.reason}; utility ${purchase.utility.toFixed(2)}, score ${purchase.score.toFixed(4)}`,
         });
     }
 
     rejected.push(
-        `damage/tick solver explored ${plan.explored} nodes and pruned ${plan.pruned}; selected ${plan.purchases.length} purchases with utility ${plan.utility.toFixed(2)}; ${plan.research.recommendation}`,
+        `portfolio damage/tick solver explored ${plan.explored} candidates; selected ${plan.purchases.length} purchases with utility ${plan.utility.toFixed(2)}; ${plan.research.recommendation}`,
     );
     return { cash: plan.cashRemaining, solver: plan };
 }

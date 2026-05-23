@@ -85,22 +85,32 @@ The first implementation can be a single-turn, single-horizon MILP. It does not
 need to model future turns choosing new orders at later ticks. Each invocation
 solves from the current scan and will re-solve next turn with better data.
 
-## MVP Implementation
+## Current Implementation: Portfolio Infrastructure Solve
 
-The first code implementation is a bounded integer search over current-turn
-infrastructure purchases, not yet the full MILP described below. It uses the
-same objective shape:
+The current code implementation is a single-turn portfolio solve over
+current-turn infrastructure purchases, not yet the full MILP described below.
+It deliberately does not stop at the first locally-positive purchase. Instead,
+it repeatedly evaluates complete terminal states under one objective:
 
-- build defense, expansion, and frontier zones from the current scan
-- evaluate reachable industry and ships/tick for each zone at `H = 30`
-- project Weapons completion from the resulting science total
-- score damage/tick using the NPA-style Weapons formula
-- select E/I/S purchases that improve the scenario score after reserves
+- build defense, expansion, and frontier zones from the current scan;
+- evaluate reachable industry and ships/tick for each zone at horizon `H`;
+- project research completion from the resulting science total;
+- score continuous damage/tick so small industry changes have marginal value;
+- add terminal infrastructure value so idle cash has low value compared with
+  productive assets;
+- reduce industry and science terminal value as they approach an
+  economy-relative balance target.
 
-This gives the planner a real optimization target immediately while preserving
-a path toward the exact MILP. Carrier routing, ship allocation, hard defense
-constraints, and multi-tick infrastructure sequencing should migrate into the
-same solver once this objective is validated against recorded games.
+This makes "spend before production" an objective consequence rather than a
+fallback: if cash has low terminal value and infrastructure has persistent
+terminal value, the best terminal state converts cash into E/I/S. The
+industry/science balance is also objective-driven rather than enforced as a
+hard cap: their marginal terminal value decays as total industry approaches
+roughly `economy / 2` and total science approaches roughly `economy / 4`.
+
+Carrier routing, ship allocation, hard defense constraints, and multi-tick
+infrastructure sequencing should migrate into the same solver once this
+objective is validated against recorded games.
 
 ## Inputs
 

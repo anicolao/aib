@@ -60,6 +60,7 @@ export interface DamageTickSolverPlan {
     research: ResearchProjection;
     zones: DamageTickZoneReport[];
     notes: string[];
+    solverMode: "portfolio";
 }
 
 interface SolverOptions {
@@ -94,6 +95,10 @@ interface ObjectiveResult {
     zones: DamageTickZoneReport[];
 }
 
+interface PortfolioEvaluation extends ObjectiveResult {
+    cashRemaining: number;
+}
+
 export function optimizeDamageTickInfrastructure(
     scan: ScanningData,
     player: Player,
@@ -105,102 +110,106 @@ export function optimizeDamageTickInfrastructure(
     const horizonTicks = Math.max(1, options.horizonTicks);
     const spendable = cashStart - reserve;
     const baselineStars = cloneStars(ownedStars);
-    const baseline = evaluateObjective(scan, player, baselineStars, horizonTicks, options.defenseGraph);
+    const baseline = evaluatePortfolioObjective(scan, player, baselineStars, cashStart, horizonTicks, options.defenseGraph);
     if (spendable <= 0) {
         return emptyPlan(cashStart, baseline, horizonTicks, `no spendable cash after reserve $${reserve}`);
     }
 
-    const maxDepth = Math.min(22, Math.max(5, ownedStars.length * 3));
-    const maxNodes = 50000;
     let explored = 0;
-    let pruned = 0;
-    let bestStars = baselineStars;
-    let best: DamageTickSolverPlan = {
-        purchases: [],
-        cashRemaining: cashStart,
-        utility: 0,
-        objectiveValue: baseline.objectiveValue,
+    const stateStars = cloneStars(ownedStars);
+    const purchases: SolverInfraPurchase[] = [];
+    let cash = cashStart;
+    let current = baseline;
+
+    while (cash - reserve > 0) {
+        const candidate = bestPortfolioCandidate(scan, player, stateStars, cash, reserve, horizonTicks, current, options.defenseGraph);
+        explored += candidate.explored;
+        if (!candidate.best) break;
+        const star = stateStars.find((entry) => entry.uid === candidate.best?.starUid);
+        if (!star) break;
+        applyPurchase(star, candidate.best.kind);
+        cash -= candidate.best.cost;
+        purchases.push({
+            kind: candidate.best.kind,
+            starUid: candidate.best.starUid,
+            starName: star.n,
+            cost: candidate.best.cost,
+            utility: candidate.best.immediateUtility,
+            score: candidate.best.score,
+            reason: purchaseReason(candidate.best.kind, star, candidate.evaluation, horizonTicks),
+        });
+        current = candidate.evaluation;
+        if (purchases.length >= 10000) break;
+    }
+
+    const finalObjective = evaluatePortfolioObjective(scan, player, stateStars, cash, horizonTicks, options.defenseGraph);
+    const plan: DamageTickSolverPlan = {
+        purchases,
+        cashRemaining: cash,
+        utility: finalObjective.objectiveValue - baseline.objectiveValue,
+        objectiveValue: finalObjective.objectiveValue,
         baselineObjectiveValue: baseline.objectiveValue,
-        explored: 0,
+        explored,
         pruned: 0,
         horizonTicks,
-        selectedResearchKind: baseline.selectedResearchKind,
-        recommendResearchChange: baseline.recommendResearchChange,
-        research: baseline.research,
-        zones: baseline.zones,
-        notes: [],
-    };
-
-    const search = (stateStars: SolverStar[], cash: number, purchases: SolverInfraPurchase[]) => {
-        explored += 1;
-        const objective = evaluateObjective(scan, player, stateStars, horizonTicks, options.defenseGraph);
-        const utility = objective.objectiveValue - baseline.objectiveValue;
-        if (utility > best.utility || (utility === best.utility && cash > best.cashRemaining)) {
-            bestStars = cloneStars(stateStars);
-            best = {
-                purchases: [...purchases],
-                cashRemaining: cash,
-                utility,
-                objectiveValue: objective.objectiveValue,
-                baselineObjectiveValue: baseline.objectiveValue,
-                explored,
-                pruned,
-                horizonTicks,
-                selectedResearchKind: objective.selectedResearchKind,
-                recommendResearchChange: objective.recommendResearchChange,
-                research: objective.research,
-                zones: objective.zones,
-                notes: [],
-            };
-        }
-        if (explored >= maxNodes || purchases.length >= maxDepth) return;
-
-        const candidates = rankedCandidates(scan, player, stateStars, cash - reserve, horizonTicks, objective, options.defenseGraph)
-            .filter((candidate) => candidate.immediateUtility > -0.5)
-            .slice(0, 14);
-        if (candidates.length === 0) return;
-
-        const optimistic = utility + candidates.reduce((total, candidate) => total + Math.max(0, candidate.immediateUtility), 0);
-        if (optimistic + 0.01 < best.utility) {
-            pruned += 1;
-            return;
-        }
-
-        for (const candidate of candidates) {
-            const nextStars = cloneStars(stateStars);
-            const nextStar = nextStars.find((star) => star.uid === candidate.starUid);
-            if (!nextStar) continue;
-            applyPurchase(nextStar, candidate.kind);
-            search(nextStars, cash - candidate.cost, [
-                ...purchases,
-                {
-                    kind: candidate.kind,
-                    starUid: candidate.starUid,
-                    starName: nextStar.n,
-                    cost: candidate.cost,
-                    utility: candidate.immediateUtility,
-                    score: candidate.score,
-                    reason: purchaseReason(candidate.kind, nextStar, objective, horizonTicks),
-                },
-            ]);
-        }
-    };
-
-    search(baselineStars, cashStart, []);
-    const finalObjective = evaluateObjective(scan, player, bestStars, horizonTicks, options.defenseGraph);
-    best = {
-        ...best,
-        explored,
-        pruned,
         selectedResearchKind: finalObjective.selectedResearchKind,
         recommendResearchChange: finalObjective.recommendResearchChange,
         research: finalObjective.research,
         zones: finalObjective.zones,
+        notes: [],
+        solverMode: "portfolio",
     };
-    if (best.purchases.length === 0) {
-        best.notes = ["damage/tick solver found no positive infrastructure purchase"];
+    if (plan.purchases.length === 0) {
+        plan.notes = ["portfolio solver found no positive terminal-state infrastructure portfolio"];
     }
-    return best;
+    return plan;
+}
+
+function bestPortfolioCandidate(
+    scan: ScanningData,
+    player: Player,
+    stars: SolverStar[],
+    cash: number,
+    reserve: number,
+    horizonTicks: number,
+    current: PortfolioEvaluation,
+    defenseGraph: DefenseGraphPlan | undefined,
+) {
+    let explored = 0;
+    let best: Candidate | undefined;
+    let evaluation = current;
+    const spendable = cash - reserve;
+    if (spendable <= 0) return { best, evaluation, explored };
+    for (const star of stars) {
+        const costs: Array<[SolverInfraKind, number]> = [
+            ["economy", economyCostFor(scan.config, star)],
+            ["industry", industryCostFor(scan.config, star)],
+            ["science", scienceCostFor(scan.config, star)],
+        ];
+        for (const [kind, cost] of costs) {
+            if (cost > spendable) continue;
+            const nextStars = cloneStars(stars);
+            const nextStar = nextStars.find((entry) => entry.uid === star.uid);
+            if (!nextStar) continue;
+            applyPurchase(nextStar, kind);
+            const candidateEvaluation = evaluatePortfolioObjective(scan, player, nextStars, cash - cost, horizonTicks, defenseGraph);
+            explored += 1;
+            const immediateUtility = candidateEvaluation.objectiveValue - current.objectiveValue;
+            if (immediateUtility <= 0) continue;
+            const candidate: Candidate = {
+                kind,
+                starUid: star.uid,
+                cost,
+                immediateUtility,
+                score: immediateUtility / Math.max(1, cost),
+            };
+            if (!best || candidate.score > best.score || (candidate.score === best.score && candidate.immediateUtility > best.immediateUtility)) {
+                best = candidate;
+                evaluation = candidateEvaluation;
+            }
+        }
+    }
+    return { best, evaluation, explored };
 }
 
 function emptyPlan(cashStart: number, baseline: ObjectiveResult, horizonTicks: number, note: string): DamageTickSolverPlan {
@@ -218,63 +227,7 @@ function emptyPlan(cashStart: number, baseline: ObjectiveResult, horizonTicks: n
         research: baseline.research,
         zones: baseline.zones,
         notes: [note],
-    };
-}
-
-function rankedCandidates(
-    scan: ScanningData,
-    player: Player,
-    stars: SolverStar[],
-    spendable: number,
-    horizonTicks: number,
-    currentObjective: ObjectiveResult,
-    defenseGraph: DefenseGraphPlan | undefined,
-) {
-    if (spendable <= 0) return [];
-    const candidates: Candidate[] = [];
-    for (const star of stars) {
-        const economyCost = economyCostFor(scan.config, star);
-        if (economyCost <= spendable && crossesProductionBoundaryNextTurn(scan)) {
-            candidates.push(candidateFor(scan, player, stars, star, "economy", economyCost, horizonTicks, currentObjective, defenseGraph));
-        }
-
-        const industryCost = industryCostFor(scan.config, star);
-        if (industryCost <= spendable && belowEmpireIndustryCapAfterPurchase(stars)) {
-            candidates.push(candidateFor(scan, player, stars, star, "industry", industryCost, horizonTicks, currentObjective, defenseGraph));
-        }
-
-        const scienceCost = scienceCostFor(scan.config, star);
-        if (scienceCost <= spendable && belowEmpireScienceCapAfterPurchase(stars)) {
-            candidates.push(candidateFor(scan, player, stars, star, "science", scienceCost, horizonTicks, currentObjective, defenseGraph));
-        }
-    }
-    return candidates
-        .filter((candidate) => Number.isFinite(candidate.immediateUtility))
-        .sort((a, b) => b.score - a.score || b.immediateUtility - a.immediateUtility || a.cost - b.cost || a.starUid - b.starUid);
-}
-
-function candidateFor(
-    scan: ScanningData,
-    player: Player,
-    stars: SolverStar[],
-    star: SolverStar,
-    kind: SolverInfraKind,
-    cost: number,
-    horizonTicks: number,
-    currentObjective: ObjectiveResult,
-    defenseGraph: DefenseGraphPlan | undefined,
-): Candidate {
-    const nextStars = cloneStars(stars);
-    const nextStar = nextStars.find((entry) => entry.uid === star.uid);
-    if (nextStar) applyPurchase(nextStar, kind);
-    const nextObjective = evaluateObjective(scan, player, nextStars, horizonTicks, defenseGraph);
-    const immediateUtility = nextObjective.objectiveValue - currentObjective.objectiveValue;
-    return {
-        kind,
-        starUid: star.uid,
-        cost,
-        immediateUtility,
-        score: immediateUtility / Math.max(1, cost),
+        solverMode: "portfolio",
     };
 }
 
@@ -300,6 +253,24 @@ function evaluateObjective(
         recommendResearchChange: selectedResearch.research.selectedResearchKind !== currentResearchKind,
         research: selectedResearch.research,
         zones: selectedResearch.zones,
+    };
+}
+
+function evaluatePortfolioObjective(
+    scan: ScanningData,
+    player: Player,
+    stars: SolverStar[],
+    cashRemaining: number,
+    horizonTicks: number,
+    defenseGraph: DefenseGraphPlan | undefined,
+): PortfolioEvaluation {
+    const objective = evaluateObjective(scan, player, stars, horizonTicks, defenseGraph);
+    return {
+        ...objective,
+        cashRemaining,
+        objectiveValue: objective.objectiveValue
+            + terminalInfrastructureValue(scan, player, stars, horizonTicks)
+            + cashRemaining * terminalCashWeight(scan),
     };
 }
 
@@ -357,12 +328,9 @@ function researchProjection(
     const researchCompletionBonus = selectedResearchKind === TECH.WEAPONS && weaponsCompletionTick !== undefined && weaponsCompletionTick <= horizonTicks
         ? weaponSwing * (1 + (horizonTicks - weaponsCompletionTick) / horizonTicks)
         : 0;
-    const economyScore = crossesProductionBoundaryNextTurn(scan)
-        ? productionEventsWithin(scan, horizonTicks) * projectedEconomy(stars) * 0.8
-        : 0;
+    const economyScore = productionEventsWithin(scan, horizonTicks) * projectedEconomy(stars) * 0.8;
     const scienceFloorScore = projectedScience * scienceStrategicWeight(scan, player) * 2.2;
-    const costProxy = infrastructureCostProxy(scan, stars) * 0.012;
-    const objectiveValue = damageScore + scienceMomentum + researchCompletionBonus + economyScore + scienceFloorScore - costProxy;
+    const objectiveValue = damageScore + scienceMomentum + researchCompletionBonus + economyScore + scienceFloorScore;
     const weaponsTiming = weaponsCompletionTick === undefined
         ? `no completion inside a ${horizonTicks}-tick horizon`
         : weaponsCompletionTick <= horizonTicks
@@ -514,7 +482,7 @@ function sourceReadiness(scan: ScanningData, player: Player, source: SolverStar,
 
 function damagePerTickFor(shipsPerTick: number, ownWeapons: number, enemyWeapons: number) {
     if (shipsPerTick <= 0) return 0;
-    return Math.ceil(shipsPerTick / Math.max(1, enemyWeapons + 1)) * Math.max(1, ownWeapons);
+    return shipsPerTick / Math.max(1, enemyWeapons + 1) * Math.max(1, ownWeapons);
 }
 
 function globalWeaponSwing(scan: ScanningData, player: Player, stars: SolverStar[], horizonTicks: number) {
@@ -540,6 +508,40 @@ function researchProgressWithinHorizon(tech: TechInfo, science: number, horizonT
     return Math.min(1, Math.max(0, science * horizonTicks / remaining));
 }
 
+function terminalInfrastructureValue(scan: ScanningData, player: Player, stars: SolverStar[], horizonTicks: number) {
+    const economy = projectedEconomy(stars);
+    const industry = projectedIndustry(stars);
+    const science = projectedScience(stars);
+    const industryBalance = targetBalance(industry, Math.max(1, economy * 0.5));
+    const scienceBalance = targetBalance(science, Math.max(1, economy * 0.25));
+    const weaponsGap = Math.max(0, bestVisibleEnemyWeapons(scan) - techLevel(player, TECH.WEAPONS));
+    const scienceUrgency = Math.min(1.5, weaponsGap / 8);
+    const productionCycleValue = productionEventsWithin(scan, horizonTicks) * 0.8
+        + Math.max(1, horizonTicks / Math.max(1, scan.productionRate)) * 0.35;
+    let total = economy * productionCycleValue;
+    for (const star of stars) {
+        const frontier = Math.max(0.35, Math.min(2.5, numeric(star.frontierWeight, 1)));
+        total += infrastructureBookValue(scan.config, star, "economy") * 0.36;
+        total += infrastructureBookValue(scan.config, star, "industry") * (0.02 + industryBalance * (0.42 + frontier * 0.08));
+        total += infrastructureBookValue(scan.config, star, "science") * (0.02 + scienceBalance * (0.5 + scienceUrgency * 0.12));
+    }
+    return total;
+}
+
+function targetBalance(value: number, target: number) {
+    const ratio = value / Math.max(1, target);
+    if (ratio >= 1) return 0;
+    return 1 - ratio * ratio;
+}
+
+function terminalCashWeight(scan: ScanningData) {
+    return crossesProductionBoundaryNextTurn(scan) ? 0.08 : 0.16;
+}
+
+function projectedScience(stars: SolverStar[]) {
+    return stars.reduce((total, star) => total + Math.max(0, star.s), 0);
+}
+
 function projectedEconomy(stars: SolverStar[]) {
     return stars.reduce((total, star) => total + Math.max(0, star.e), 0);
 }
@@ -548,33 +550,12 @@ function projectedIndustry(stars: SolverStar[]) {
     return stars.reduce((total, star) => total + Math.max(0, star.i), 0);
 }
 
-function belowEmpireIndustryCapAfterPurchase(stars: SolverStar[]) {
-    const economy = projectedEconomy(stars);
-    const industry = projectedIndustry(stars);
-    return industry + 1 <= economy / 2;
-}
-
-function belowEmpireScienceCapAfterPurchase(stars: SolverStar[]) {
-    const economy = projectedEconomy(stars);
-    const science = stars.reduce((total, star) => total + Math.max(0, star.s), 0);
-    return science + 1 <= economy / 4;
-}
-
 function scienceStrategicWeight(scan: ScanningData, player: Player) {
     const ownWeapons = techLevel(player, TECH.WEAPONS);
     const bestEnemy = bestVisibleEnemyWeapons(scan);
     const behind = Math.max(0, bestEnemy - ownWeapons);
     const researchingWeapons = player.researching === TECH.WEAPONS ? 1.5 : 1;
     return researchingWeapons * (1 + behind * 0.75);
-}
-
-function infrastructureCostProxy(scan: ScanningData, stars: SolverStar[]) {
-    return stars.reduce((total, star) => {
-        const economyCost = economyCostFor(scan.config, star);
-        const industryCost = industryCostFor(scan.config, star);
-        const scienceCost = scienceCostFor(scan.config, star);
-        return total + star.e * economyCost * 0.05 + star.i * industryCost * 0.05 + star.s * scienceCost * 0.05;
-    }, 0);
 }
 
 function nearestOwnedStar(stars: SolverStar[], target: Star) {
@@ -613,6 +594,14 @@ function applyPurchase(star: SolverStar, kind: SolverInfraKind) {
 
 function cloneStars(stars: SolverStar[]) {
     return stars.map((star) => ({ ...star }));
+}
+
+function infrastructureBookValue(config: GameConfig, star: ScannedStar, kind: SolverInfraKind) {
+    const levels = kind === "economy" ? star.e : kind === "industry" ? star.i : star.s;
+    const factor = kind === "economy" ? 2.5 : kind === "industry" ? 5 : 20;
+    const devCost = kind === "economy" ? config.devCostEco : kind === "industry" ? config.devCostInd : config.devCostSci;
+    const resource = Math.max(0.01, star.r / 100);
+    return factor * devCost * levels * (levels + 1) / 2 / resource;
 }
 
 function economyCostFor(config: GameConfig, star: ScannedStar) {
