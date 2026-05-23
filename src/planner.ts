@@ -2910,9 +2910,31 @@ function etaFromFleet(scan: ScanningData, fleet: Fleet, target: Star) {
 
 function orbitingShipsAt(scan: ScanningData, starUid: number, ownerUid: number, ticksUntilArrival: number) {
     return Object.values(scan.fleets)
-        .filter((fleet) => fleet.puid === ownerUid && fleet.ouid === starUid)
-        .filter((fleet) => fleet.o.length === 0 || safeNumber(fleet.o[0]?.[0], 0) >= ticksUntilArrival)
-        .reduce((total, fleet) => total + fleet.st, 0);
+        .filter((fleet) => fleet.puid === ownerUid)
+        .reduce((total, fleet) => total + fleetShipsAtStarAt(scan, fleet, starUid, ticksUntilArrival), 0);
+}
+
+function fleetShipsAtStarAt(scan: ScanningData, fleet: Fleet, starUid: number, ticksUntilArrival: number) {
+    if (fleet.ouid === starUid && (fleet.o.length === 0 || safeNumber(fleet.o[0]?.[0], 0) >= ticksUntilArrival)) {
+        return fleet.st;
+    }
+
+    let eta = 0;
+    let position: Pick<Star, "x" | "y"> = fleet;
+    const speed = Math.max(fleet.speed || scan.fleetSpeed, 0.0001);
+    for (let index = 0; index < fleet.o.length; index += 1) {
+        const [delayRaw, targetUid] = fleet.o[index] ?? [];
+        if (targetUid === undefined) return 0;
+        const target = scan.stars[String(targetUid)];
+        if (!target) return 0;
+        eta += safeNumber(delayRaw, 0) + etaTicks(starDistance(position, target), speed);
+        if (target.uid === starUid && eta <= ticksUntilArrival) {
+            const nextDelay = safeNumber(fleet.o[index + 1]?.[0], Number.POSITIVE_INFINITY);
+            return eta + nextDelay >= ticksUntilArrival ? fleet.st : 0;
+        }
+        position = target;
+    }
+    return 0;
 }
 
 function rallyAvailableShips(scan: ScanningData, ownFleets: Fleet[], rallyStar: MutableStar, assignedFleetUids: Set<number>) {
