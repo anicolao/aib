@@ -103,6 +103,10 @@ it repeatedly evaluates complete terminal states under one objective:
 - include economy purchase variables only when the next submitted turn crosses
   a production boundary, because buying economy earlier is dominated by waiting
   and re-solving with fresher scan data.
+- value economy and science by defendability rather than frontier pressure,
+  because their benefits are global or empire-wide and should live on stars
+  the empire can hold; only industry gets an explicit frontier/reachability
+  premium.
 
 This makes "spend before production" an objective consequence rather than a
 fallback: if cash has low terminal value and infrastructure has persistent

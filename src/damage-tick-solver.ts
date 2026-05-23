@@ -271,7 +271,7 @@ function evaluatePortfolioObjective(
         ...objective,
         cashRemaining,
         objectiveValue: objective.objectiveValue
-            + terminalInfrastructureValue(scan, player, stars, horizonTicks)
+            + terminalInfrastructureValue(scan, player, stars, horizonTicks, defenseGraph)
             + cashRemaining * terminalCashWeight(scan),
     };
 }
@@ -510,7 +510,13 @@ function researchProgressWithinHorizon(tech: TechInfo, science: number, horizonT
     return Math.min(1, Math.max(0, science * horizonTicks / remaining));
 }
 
-function terminalInfrastructureValue(scan: ScanningData, player: Player, stars: SolverStar[], horizonTicks: number) {
+function terminalInfrastructureValue(
+    scan: ScanningData,
+    player: Player,
+    stars: SolverStar[],
+    horizonTicks: number,
+    defenseGraph: DefenseGraphPlan | undefined,
+) {
     const economy = projectedEconomy(stars);
     const industry = projectedIndustry(stars);
     const science = projectedScience(stars);
@@ -523,11 +529,29 @@ function terminalInfrastructureValue(scan: ScanningData, player: Player, stars: 
     let total = economy * productionCycleValue;
     for (const star of stars) {
         const frontier = Math.max(0.35, Math.min(2.5, numeric(star.frontierWeight, 1)));
-        total += infrastructureBookValue(scan.config, star, "economy") * 0.36;
+        const defended = defendabilityWeight(defenseGraph, star);
+        total += star.e * defended * productionCycleValue * 1.8;
         total += infrastructureBookValue(scan.config, star, "industry") * (0.02 + industryBalance * (0.42 + frontier * 0.08));
-        total += infrastructureBookValue(scan.config, star, "science") * (0.02 + scienceBalance * (0.5 + scienceUrgency * 0.12));
+        total += star.s * defended * (scienceBalance * (42 + scienceUrgency * 10) + 2);
     }
     return total;
+}
+
+function defendabilityWeight(defenseGraph: DefenseGraphPlan | undefined, star: SolverStar) {
+    const analysis = defenseGraph?.starAnalyses.find((entry) => entry.starUid === star.uid);
+    if (!analysis) return 1;
+    switch (analysis.classification) {
+        case "interior":
+            return 1.35;
+        case "covered":
+            return 1.2;
+        case "self_hub":
+            return 1.05;
+        case "exposed_high_value":
+            return 0.65;
+        case "exposed_low_value":
+            return 0.25;
+    }
 }
 
 function targetBalance(value: number, target: number) {
