@@ -183,6 +183,19 @@ interface SupplyShuttleAssignment {
     departureShips: number;
 }
 
+interface CoreLogisticsAssignment {
+    fleet: Fleet;
+    source: MutableStar;
+    target: MutableStar;
+    finalSink: MutableStar;
+    eta: number;
+    totalEta: number;
+    score: number;
+    loadShips: number;
+    departureShips: number;
+    pathNames: string[];
+}
+
 interface ReturnCarrierAssignment {
     fleet: Fleet;
     source: MutableStar;
@@ -438,6 +451,7 @@ export function planTurn(
         cash = carrierExecution.cash;
         builtCarriersThisTurn += carrierExecution.builtCount;
         executeSupplyShuttles(scan, stars, ownFleets, tacticalFleetUids, tacticalPlan.defenseGraph, config.horizonTicks, commands, rejected);
+        executeCoreLogisticsShuttles(scan, stars, ownFleets, tacticalFleetUids, tacticalPlan.defenseGraph, config.horizonTicks, commands, rejected);
         executeReturnCarriers(scan, stars, ownFleets, tacticalFleetUids, config.horizonTicks, commands, rejected);
         const stagingExecution = executeShipStaging(scan, stars, cash, builtCarriersThisTurn, carrierPlan.budget - carrierExecution.spent, defenseReserveByStarUid, commands, rejected);
         cash = stagingExecution.cash;
@@ -1258,6 +1272,204 @@ function assignSupplyShuttles(
         assignments.push(assignment);
     }
     return assignments;
+}
+
+function executeCoreLogisticsShuttles(
+    scan: ScanningData,
+    stars: MutableStar[],
+    fleets: Fleet[],
+    unavailableFleetUids: Set<number>,
+    defenseGraph: DefenseGraphPlan,
+    horizonTicks: number,
+    commands: PlannedCommand[],
+    rejected: string[],
+) {
+    const assignments = assignCoreLogisticsShuttles(scan, stars, fleets, unavailableFleetUids, defenseGraph, horizonTicks);
+    for (const assignment of assignments) {
+        unavailableFleetUids.add(assignment.fleet.uid);
+        assignment.source.st -= assignment.loadShips;
+        const action = assignment.loadShips > 0 ? FLEET_ORDER.COLLECT : FLEET_ORDER.NOTHING;
+        commands.push({
+            kind: "fleet_order",
+            order: `add_fleet_orders,${assignment.fleet.uid},0,${assignment.target.uid},${action},${assignment.loadShips},0`,
+            reason: `core logistics carrier ${assignment.fleet.uid} loads ${assignment.loadShips} ships at ${assignment.source.n} and moves ${assignment.departureShips} ships one hop to ${assignment.target.n} toward ${assignment.finalSink.n}; path ${assignment.pathNames.join(" -> ")}, eta ${assignment.eta.toFixed(1)} ticks, score ${assignment.score.toFixed(2)}`,
+        });
+    }
+    if (assignments.length === 0) {
+        rejected.push("no idle carrier found for multi-hop core logistics from interior surplus stars");
+    }
+}
+
+function assignCoreLogisticsShuttles(
+    scan: ScanningData,
+    stars: MutableStar[],
+    fleets: Fleet[],
+    unavailableFleetUids: Set<number>,
+    defenseGraph: DefenseGraphPlan,
+    horizonTicks: number,
+) {
+    const assignments: CoreLogisticsAssignment[] = [];
+    const assignedSourceUids = new Set<number>();
+    const assignedFleetUids = new Set<number>();
+    const range = rangeValue(scan.players[String(scan.playerUid)]);
+    const speed = Math.max(scan.fleetSpeed, 0.0001);
+    const defenseAnalysis = new Map(defenseGraph.starAnalyses.map((analysis) => [analysis.starUid, analysis]));
+    const hubs = new Set(defenseGraph.hubs.map((hub) => hub.hubStarUid));
+
+    for (const fleet of idleOrbitingFleets(fleets, unavailableFleetUids)) {
+        if (assignedFleetUids.has(fleet.uid)) continue;
+        const source = stars.find((star) => star.uid === fleet.ouid);
+        if (!source || assignedSourceUids.has(source.uid)) continue;
+        const sourceAnalysis = defenseAnalysis.get(source.uid);
+        if (sourceAnalysis?.classification !== "interior" || sourceAnalysis.closestThreat) continue;
+        const sourceSurplus = supplySourceSurplus(source, fleet, defenseGraph, defenseAnalysis);
+        if (sourceSurplus < NEUTRAL_CAPTURE_SHIPS) continue;
+        const assignment = bestCoreLogisticsShuttle(scan, stars, source, fleet, range, speed, horizonTicks, defenseGraph, defenseAnalysis, hubs, sourceSurplus);
+        if (!assignment) continue;
+        assignedSourceUids.add(source.uid);
+        assignedFleetUids.add(fleet.uid);
+        assignments.push(assignment);
+    }
+
+    return assignments
+        .sort((a, b) => b.score - a.score || b.departureShips - a.departureShips || a.eta - b.eta)
+        .slice(0, 4);
+}
+
+function bestCoreLogisticsShuttle(
+    scan: ScanningData,
+    stars: MutableStar[],
+    source: MutableStar,
+    fleet: Fleet,
+    range: number,
+    speed: number,
+    horizonTicks: number,
+    defenseGraph: DefenseGraphPlan,
+    defenseAnalysis: Map<number, DefenseGraphPlan["starAnalyses"][number]>,
+    hubs: Set<number>,
+    sourceSurplus: number,
+): CoreLogisticsAssignment | undefined {
+    const sourceScore = defenseSupplyScore(scan, source, defenseGraph, defenseAnalysis, hubs);
+    const loadShips = Math.min(sourceSurplus, Math.max(NEUTRAL_CAPTURE_SHIPS, Math.floor(sourceSurplus / 2)));
+    const departureShips = fleet.st + loadShips;
+
+    return coreLogisticsSinks(scan, stars, defenseGraph, defenseAnalysis, hubs)
+        .filter((sink) => sink.uid !== source.uid)
+        .map((sink) => {
+            const path = shortestOwnedPath(stars, source, sink, range, speed);
+            if (!path || path.firstHop.uid === source.uid) return undefined;
+            const targetScore = defenseSupplyScore(scan, path.firstHop, defenseGraph, defenseAnalysis, hubs);
+            const sinkScore = defenseSupplyScore(scan, sink, defenseGraph, defenseAnalysis, hubs);
+            const score = (sinkScore - sourceScore) * Math.max(1, Math.log2(departureShips + 1))
+                + targetScore * 0.5
+                + sourceSurplus * 0.25
+                - path.totalEta * 1.5
+                - path.firstEta * 2;
+            return {
+                fleet,
+                source,
+                target: path.firstHop,
+                finalSink: sink,
+                eta: path.firstEta,
+                totalEta: path.totalEta,
+                score,
+                loadShips,
+                departureShips,
+                pathNames: path.path.map((star) => star.n),
+            };
+        })
+        .filter((assignment): assignment is CoreLogisticsAssignment => assignment !== undefined)
+        .filter((assignment) => assignment.eta <= horizonTicks
+            && assignment.departureShips > 0
+            && assignment.score > 5)
+        .sort((a, b) => b.score - a.score
+            || b.departureShips - a.departureShips
+            || a.totalEta - b.totalEta
+            || a.target.uid - b.target.uid)[0];
+}
+
+function coreLogisticsSinks(
+    scan: ScanningData,
+    stars: MutableStar[],
+    defenseGraph: DefenseGraphPlan,
+    defenseAnalysis: Map<number, DefenseGraphPlan["starAnalyses"][number]>,
+    hubs: Set<number>,
+) {
+    return stars
+        .filter((star) => {
+            if (hubs.has(star.uid)) return true;
+            const analysis = defenseAnalysis.get(star.uid);
+            if (!analysis) return false;
+            if (analysis.classification === "interior") return false;
+            if (analysis.classification === "exposed_low_value") return false;
+            return defenseSupplyScore(scan, star, defenseGraph, defenseAnalysis, hubs) > 25;
+        })
+        .sort((a, b) => defenseSupplyScore(scan, b, defenseGraph, defenseAnalysis, hubs) - defenseSupplyScore(scan, a, defenseGraph, defenseAnalysis, hubs)
+            || territoryValue(b) - territoryValue(a)
+            || a.uid - b.uid);
+}
+
+function shortestOwnedPath(
+    stars: MutableStar[],
+    source: MutableStar,
+    sink: MutableStar,
+    range: number,
+    speed: number,
+) {
+    const dist = new Map<number, number>();
+    const previous = new Map<number, number>();
+    const unvisited = new Set(stars.map((star) => star.uid));
+    dist.set(source.uid, 0);
+
+    while (unvisited.size > 0) {
+        let current: MutableStar | undefined;
+        let currentDist = Number.POSITIVE_INFINITY;
+        for (const star of stars) {
+            if (!unvisited.has(star.uid)) continue;
+            const candidateDist = dist.get(star.uid) ?? Number.POSITIVE_INFINITY;
+            if (candidateDist < currentDist) {
+                current = star;
+                currentDist = candidateDist;
+            }
+        }
+        if (!current || currentDist === Number.POSITIVE_INFINITY) break;
+        unvisited.delete(current.uid);
+        if (current.uid === sink.uid) break;
+
+        for (const neighbor of stars) {
+            if (!unvisited.has(neighbor.uid) || neighbor.uid === current.uid) continue;
+            const distance = starDistance(current, neighbor);
+            if (distance > range) continue;
+            const nextDist = currentDist + etaTicks(distance, speed);
+            if (nextDist < (dist.get(neighbor.uid) ?? Number.POSITIVE_INFINITY)) {
+                dist.set(neighbor.uid, nextDist);
+                previous.set(neighbor.uid, current.uid);
+            }
+        }
+    }
+
+    const totalEta = dist.get(sink.uid);
+    if (totalEta === undefined) return undefined;
+
+    const byUid = new Map(stars.map((star) => [star.uid, star]));
+    const path: MutableStar[] = [];
+    let cursor: number | undefined = sink.uid;
+    while (cursor !== undefined) {
+        const star = byUid.get(cursor);
+        if (!star) return undefined;
+        path.unshift(star);
+        if (cursor === source.uid) break;
+        cursor = previous.get(cursor);
+    }
+    if (path[0]?.uid !== source.uid || path.length < 2) return undefined;
+    const firstHop = path[1];
+    if (!firstHop) return undefined;
+    return {
+        firstHop,
+        firstEta: etaTicks(starDistance(source, firstHop), speed),
+        totalEta,
+        path,
+    };
 }
 
 function bestSupplyShuttle(
