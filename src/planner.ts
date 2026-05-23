@@ -2769,7 +2769,7 @@ function assignDefenseGraphReinforcements(
 
 function assignWinningAttacks(scan: ScanningData, ownFleets: Fleet[], assignedFleetUids: Set<number>) {
     const assignments: FleetRouteAssignment[] = [];
-    const attackedTargetUids = new Set<number>();
+    const attackedTargetUids = friendlyAttackTargetUids(scan, ownFleets);
     const enemyTargets = Object.values(scan.stars)
         .filter((star): star is ScannedStar => isScanned(star) && star.puid > 0 && star.puid !== scan.playerUid)
         .sort((a, b) => territoryValue(b) - territoryValue(a) || b.st - a.st || a.uid - b.uid);
@@ -2803,6 +2803,19 @@ function assignWinningAttacks(scan: ScanningData, ownFleets: Fleet[], assignedFl
         });
     }
     return assignments;
+}
+
+function friendlyAttackTargetUids(scan: ScanningData, ownFleets: Fleet[]) {
+    const targetUids = new Set<number>();
+    for (const fleet of ownFleets) {
+        const targetUid = fleet.o[0]?.[1];
+        if (targetUid === undefined) continue;
+        const target = scan.stars[String(targetUid)];
+        if (target && target.puid > 0 && target.puid !== scan.playerUid) {
+            targetUids.add(target.uid);
+        }
+    }
+    return targetUids;
 }
 
 function offensiveBattleMargin(scan: ScanningData) {
