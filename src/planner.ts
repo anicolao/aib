@@ -2,6 +2,7 @@ import type { Fleet, GameConfig, Player, ScannedStar, ScanningData, Star, TechIn
 import type { PlannedCommand } from "./command.js";
 import { estimateBattle, estimateStarBattle, projectedStarShips, type BattleEstimate } from "./battle.js";
 import { computeDefenseGraph, type DefenseGraphPlan } from "./defense-graph.js";
+import { optimizeDamageTickInfrastructure, type DamageTickSolverPlan } from "./damage-tick-solver.js";
 import { intrinsicStarValue } from "./star-value.js";
 
 export interface PlannerConfig {
@@ -35,6 +36,7 @@ export interface DecisionRecord {
     diplomacyDrafts: DiplomacyDraft[];
     combat: CombatSummary;
     defenseGraph: DefenseGraphPlan;
+    damageTickSolver: DamageTickSolverPlan;
     rejected: string[];
 }
 
@@ -408,10 +410,19 @@ export function planTurn(
         mandatoryReserve,
         defensiveCarrierPlan.buildCost + interiorHubSupplyPlan.buildCost + carrierPlan.buildCost + techTransferPlan.reserveCost,
     );
-    cash = buyInfrastructure(scan, player, stars, cash, reserve, config, commands, rejected);
+    const infrastructurePlan = buyInfrastructure(scan, player, stars, cash, reserve, config, tacticalPlan.defenseGraph, commands, rejected);
+    cash = infrastructurePlan.cash;
 
     commands.push(...techTransferPlan.commands);
     cash -= techTransferPlan.reserveCost;
+
+    if (infrastructurePlan.solver.recommendResearchChange && infrastructurePlan.solver.selectedResearchKind === TECH.WEAPONS) {
+        commands.push({
+            kind: "batched_order",
+            order: `change_research,${TECH.WEAPONS}`,
+            reason: infrastructurePlan.solver.research.recommendation,
+        });
+    }
 
     executeTacticalRoutes(tacticalPlan, commands);
 
@@ -444,7 +455,7 @@ export function planTurn(
     const techDraftRecipients = new Set(techTransferPlan.diplomacyDrafts.map((draft) => draft.recipientUid));
     const diplomacyDrafts = [
         ...techTransferPlan.diplomacyDrafts,
-        ...draftDiplomacy(scan, diplomacyMessages, techDraftRecipients),
+        ...draftDiplomacy(scan, diplomacyMessages, techDraftRecipients, infrastructurePlan.solver.selectedResearchKind),
     ];
 
     return {
@@ -471,6 +482,7 @@ export function planTurn(
         diplomacyDrafts,
         combat: combatSummary(tacticalPlan),
         defenseGraph: tacticalPlan.defenseGraph,
+        damageTickSolver: infrastructurePlan.solver,
         rejected,
     };
 }
@@ -482,16 +494,21 @@ function buyInfrastructure(
     cashStart: number,
     reserve: number,
     plannerConfig: PlannerConfig,
+    defenseGraph: DefenseGraphPlan,
     commands: PlannedCommand[],
     rejected: string[],
 ) {
-    const plan = optimizeInfrastructure(scan, player, stars, cashStart, reserve, plannerConfig);
+    const plan = optimizeDamageTickInfrastructure(scan, player, stars, cashStart, reserve, {
+        horizonTicks: plannerConfig.horizonTicks,
+        defenseGraph,
+    });
     if (plan.purchases.length === 0) {
         const spendable = cashStart - reserve;
         rejected.push(spendable <= 0
             ? `stopped infrastructure purchases with $${cashStart}; reserve is $${reserve}`
-            : `stopped infrastructure; optimizer found no positive-utility purchase within spendable budget $${spendable}`);
-        return cashStart;
+            : `stopped infrastructure; damage/tick solver found no positive-utility purchase within spendable budget $${spendable}`);
+        for (const note of plan.notes) rejected.push(note);
+        return { cash: cashStart, solver: plan };
     }
 
     for (const purchase of plan.purchases) {
@@ -502,14 +519,14 @@ function buyInfrastructure(
         commands.push({
             kind: "batched_order",
             order: `upgrade_${purchase.kind},${purchase.starUid},${purchase.cost}`,
-            reason: `${purchase.kind} at ${purchase.starName} selected by 30-tick optimizer; utility ${purchase.utility.toFixed(2)}, score ${purchase.score.toFixed(4)}`,
+            reason: `${purchase.kind} at ${purchase.starName} selected by damage/tick solver; ${purchase.reason}; utility ${purchase.utility.toFixed(2)}, score ${purchase.score.toFixed(4)}`,
         });
     }
 
     rejected.push(
-        `infrastructure optimizer explored ${plan.explored} nodes and pruned ${plan.pruned}; selected ${plan.purchases.length} purchases with utility ${plan.utility.toFixed(2)}`,
+        `damage/tick solver explored ${plan.explored} nodes and pruned ${plan.pruned}; selected ${plan.purchases.length} purchases with utility ${plan.utility.toFixed(2)}; ${plan.research.recommendation}`,
     );
-    return plan.cashRemaining;
+    return { cash: plan.cashRemaining, solver: plan };
 }
 
 function optimizeInfrastructure(
@@ -2518,7 +2535,7 @@ function ownedScannedStars(scan: ScanningData) {
         .filter((star): star is ScannedStar => isScanned(star) && star.puid === scan.playerUid);
 }
 
-function draftDiplomacy(scan: ScanningData, messages: unknown[], suppressedRecipients = new Set<number>()): DiplomacyDraft[] {
+function draftDiplomacy(scan: ScanningData, messages: unknown[], suppressedRecipients = new Set<number>(), plannedResearchKind?: number): DiplomacyDraft[] {
     const player = scan.players[String(scan.playerUid)];
     if (!player) return [];
 
@@ -2538,10 +2555,11 @@ function draftDiplomacy(scan: ScanningData, messages: unknown[], suppressedRecip
         if (history.length > 0 && !responding) {
             return [];
         }
-        const research = techName(player.researching);
+        const researchKind = plannedResearchKind ?? player.researching;
+        const research = techName(researchKind);
         const latestInboundBody = responding ? latestInbound.body : undefined;
         const reply = responding
-            ? techDiplomacyReply(scan.playerUid, player.alias, neighbor.alias, player.researching, history, latestInboundBody)
+            ? techDiplomacyReply(scan.playerUid, player.alias, neighbor.alias, researchKind, history, latestInboundBody)
             : undefined;
         if (responding && !reply) {
             return [];

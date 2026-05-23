@@ -235,6 +235,7 @@ function renderTurnSummary(result: TurnSummaryInput) {
         "",
         ...renderCommands(decision),
         ...renderDiplomacy(decision),
+        ...renderDamageTickSolver(decision),
         ...renderDefenseGraph(decision),
         ...renderCombat(decision),
         ...renderRejected(decision),
@@ -275,6 +276,29 @@ function renderDiplomacy(decision: DecisionRecord) {
     ];
 }
 
+function renderDamageTickSolver(decision: DecisionRecord) {
+    const solver = decision.damageTickSolver;
+    if (!solver) return [];
+    const delta = solver.objectiveValue - solver.baselineObjectiveValue;
+    const research = solver.research;
+    const lines = [
+        "### Damage/Tick Solver",
+        "",
+        `Objective ${solver.baselineObjectiveValue.toFixed(2)} -> ${solver.objectiveValue.toFixed(2)} (${delta >= 0 ? "+" : ""}${delta.toFixed(2)}) over ${solver.horizonTicks} ticks.`,
+        `Research: ${techName(research.currentResearchKind)} -> ${techName(research.selectedResearchKind)}; science ${research.currentScience} -> ${research.projectedScience}; Weapons ${research.currentWeapons} -> ${research.projectedWeaponsAtHorizon}.`,
+        `Recommendation: ${research.recommendation}.`,
+    ];
+    if (solver.zones.length > 0) {
+        lines.push("");
+        lines.push("Top zones:");
+        for (const zone of solver.zones.slice(0, 6)) {
+            lines.push(`- ${zone.name} (${zone.kind}): D/T ${zone.damagePerTick}, ships/tick ${zone.shipsPerTick}, industry ${zone.reachableIndustry}, WS ${zone.projectedWeapons} vs ${zone.enemyWeapons}, weight ${zone.weight}.`);
+        }
+    }
+    lines.push("");
+    return lines;
+}
+
 function renderDefenseGraph(decision: DecisionRecord) {
     const graph = decision.defenseGraph;
     if (!graph || (graph.threats.length === 0 && graph.hubs.length === 0)) return [];
@@ -303,6 +327,27 @@ function renderDefenseGraph(decision: DecisionRecord) {
     }
     lines.push("");
     return lines;
+}
+
+function techName(kind: number) {
+    switch (kind) {
+        case 0:
+            return "Banking";
+        case 1:
+            return "Research";
+        case 2:
+            return "Manufacturing";
+        case 3:
+            return "Propulsion";
+        case 4:
+            return "Scanning";
+        case 5:
+            return "Weapons";
+        case 6:
+            return "Terraforming";
+        default:
+            return `tech ${kind}`;
+    }
 }
 
 function defenseAnalysisSummary(analysis: DecisionRecord["defenseGraph"]["starAnalyses"][number]) {
