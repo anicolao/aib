@@ -179,6 +179,7 @@ function bestPortfolioCandidate(
     let best: Candidate | undefined;
     let evaluation = current;
     const spendable = cash - reserve;
+    const canBuyEconomyNow = crossesProductionBoundaryNextTurn(scan);
     if (spendable <= 0) return { best, evaluation, explored };
     for (const star of stars) {
         const costs: Array<[SolverInfraKind, number]> = [
@@ -187,6 +188,7 @@ function bestPortfolioCandidate(
             ["science", scienceCostFor(scan.config, star)],
         ];
         for (const [kind, cost] of costs) {
+            if (kind === "economy" && !canBuyEconomyNow) continue;
             if (cost > spendable) continue;
             const nextStars = cloneStars(stars);
             const nextStar = nextStars.find((entry) => entry.uid === star.uid);

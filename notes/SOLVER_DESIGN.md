@@ -100,6 +100,9 @@ it repeatedly evaluates complete terminal states under one objective:
   productive assets;
 - reduce industry and science terminal value as they approach an
   economy-relative balance target.
+- include economy purchase variables only when the next submitted turn crosses
+  a production boundary, because buying economy earlier is dominated by waiting
+  and re-solving with fresher scan data.
 
 This makes "spend before production" an objective consequence rather than a
 fallback: if cash has low terminal value and infrastructure has persistent
