@@ -267,12 +267,13 @@ function evaluatePortfolioObjective(
     defenseGraph: DefenseGraphPlan | undefined,
 ): PortfolioEvaluation {
     const objective = evaluateObjective(scan, player, stars, horizonTicks, defenseGraph);
+    const projectedCash = cashRemaining + productionIncomeWithin(scan, player, stars, horizonTicks);
     return {
         ...objective,
         cashRemaining,
         objectiveValue: objective.objectiveValue
             + terminalInfrastructureValue(scan, player, stars, horizonTicks, defenseGraph)
-            + cashRemaining * terminalCashWeight(scan),
+            + projectedCash * terminalCashWeight(scan),
     };
 }
 
@@ -623,6 +624,11 @@ function purchaseReason(kind: SolverInfraKind, star: SolverStar, objective: Obje
 
 function productionEventsWithin(scan: ScanningData, horizonTicks: number) {
     return Math.floor((scan.productionCounter + Math.max(0, horizonTicks)) / Math.max(1, scan.productionRate));
+}
+
+function productionIncomeWithin(scan: ScanningData, player: Player, stars: SolverStar[], horizonTicks: number) {
+    const incomePerEconomy = 10 + 2 * techLevel(player, TECH.BANKING);
+    return productionEventsWithin(scan, horizonTicks) * projectedEconomy(stars) * incomePerEconomy;
 }
 
 function crossesProductionBoundaryNextTurn(scan: ScanningData) {
