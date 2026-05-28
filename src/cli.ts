@@ -19,6 +19,7 @@ import { collectDiplomacyJudgementCandidates, planTurn, type DecisionRecord } fr
 import { flavorDiplomacyDrafts } from "./diplomacy-style.js";
 import { recordTurnInputs } from "./recorder.js";
 import { writeDebugMap } from "./debug-map.js";
+import { postMarkdownToDiscord, postPngToDiscord, type DiscordWebhookConfig } from "./discord-webhook.js";
 import type { ScanningData } from "./types.js";
 
 interface CliArgs {
@@ -31,6 +32,8 @@ interface CliArgs {
     buildCarrier: boolean;
     json: boolean;
     showMap: boolean;
+    discord: boolean;
+    discordWebhookUrl?: string;
     horizonTicks?: number;
 }
 
@@ -41,6 +44,7 @@ async function main() {
     const gameId = args.gameId ?? process.env.NP_GAME_ID ?? process.env.GAME_ID;
     const apiKey = args.apiKey ?? process.env.NP_API_KEY ?? process.env.API_KEY;
     const account = accountConfig(baseUrl, gameId);
+    const discord = discordConfig(args);
 
     if (!args.scanFile && !gameId && account) {
         await runDiscoveredTurns(account, args, baseUrl);
@@ -83,12 +87,14 @@ async function main() {
         process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     } else {
         if (!result.decision) {
-            printMarkdown(renderTurnSummaries([{
+            const markdown = renderTurnSummaries([{
                 game: { id: gameId ?? "scan-file", name: result.scan.name },
                 submission: result.submission,
                 scan: result.scan,
                 skipped: result.skipped ?? "Skipped.",
-            }]));
+            }]);
+            printMarkdown(markdown);
+            await postDiscordSummary(markdown, discord);
             return;
         }
         const summaries = [{
@@ -97,8 +103,11 @@ async function main() {
             submission: result.submission,
             scan: result.scan,
         }];
-        printMarkdown(renderTurnSummaries(summaries));
-        await outputDebugMaps(summaries, args);
+        const markdown = renderTurnSummaries(summaries);
+        printMarkdown(markdown);
+        await postDiscordSummary(markdown, discord);
+        const mapPaths = await outputDebugMaps(summaries, args);
+        await postDiscordMaps(mapPaths, discord);
     }
 }
 
@@ -129,6 +138,7 @@ async function runDiscoveredTurns(account: AccountConfig, args: CliArgs, baseUrl
     const session = await createAccountSession(account);
     const games = activeGamesFromReport(session.player);
     const results = [];
+    const discord = discordConfig(args);
     for (const game of games) {
         const gameId = accountGameId(game);
         const planner = {
@@ -215,8 +225,11 @@ async function runDiscoveredTurns(account: AccountConfig, args: CliArgs, baseUrl
     if (args.json) {
         process.stdout.write(`${JSON.stringify({ activeGameCount: games.length, results }, null, 2)}\n`);
     } else {
-        printMarkdown(renderTurnSummaries(results));
-        await outputDebugMaps(results, args);
+        const markdown = renderTurnSummaries(results);
+        printMarkdown(markdown);
+        await postDiscordSummary(markdown, discord);
+        const mapPaths = await outputDebugMaps(results, args);
+        await postDiscordMaps(mapPaths, discord);
     }
 }
 
@@ -517,8 +530,23 @@ function printMarkdown(markdown: string) {
     }
 }
 
+async function postDiscordSummary(markdown: string, config: DiscordWebhookConfig | undefined) {
+    if (!config) return;
+    const count = await postMarkdownToDiscord(markdown, config);
+    process.stdout.write(`Discord webhook: posted ${count} message${count === 1 ? "" : "s"}.\n`);
+}
+
+async function postDiscordMaps(mapPaths: string[], config: DiscordWebhookConfig | undefined) {
+    if (!config || mapPaths.length === 0) return;
+    for (const path of mapPaths) {
+        await postPngToDiscord(path, `Debug map: ${path}`, config);
+    }
+    process.stdout.write(`Discord webhook: posted ${mapPaths.length} debug map${mapPaths.length === 1 ? "" : "s"}.\n`);
+}
+
 async function outputDebugMaps(results: TurnSummaryInput[], args: CliArgs) {
-    if (!args.showMap || args.json) return;
+    const paths: string[] = [];
+    if (!args.showMap || args.json) return paths;
     for (const result of results) {
         if (!result.scan || !result.decision) continue;
         const mapOptions = {
@@ -528,6 +556,7 @@ async function outputDebugMaps(results: TurnSummaryInput[], args: CliArgs) {
             Object.assign(mapOptions, { rootDir: process.env.AIB_RECORD_DIR });
         }
         const path = await writeDebugMap(result.scan, result.decision, mapOptions);
+        paths.push(path);
         process.stdout.write(`\nDebug map: ${path}\n`);
         if (!shouldUseKittyGraphics()) continue;
         const shown = spawnSync("kitty", ["+icat", path], { stdio: "inherit" });
@@ -535,6 +564,7 @@ async function outputDebugMaps(results: TurnSummaryInput[], args: CliArgs) {
             process.stdout.write(`kitty +icat failed; open ${path} to inspect the map.\n`);
         }
     }
+    return paths;
 }
 
 function alreadyReadyForTurn(scan: ScanningData) {
@@ -587,6 +617,7 @@ function parseArgs(argv: string[]): CliArgs {
         buildCarrier: process.env.AIB_BUILD_CARRIER !== "0",
         json: process.env.AIB_JSON === "1",
         showMap: process.env.AIB_SHOW_MAP !== "0",
+        discord: process.env.AIB_DISCORD_WEBHOOK !== "0",
     };
 
     for (let i = 0; i < argv.length; i += 1) {
@@ -601,6 +632,11 @@ function parseArgs(argv: string[]): CliArgs {
         else if (arg === "--json") args.json = true;
         else if (arg === "--map") args.showMap = true;
         else if (arg === "--no-map") args.showMap = false;
+        else if (arg === "--discord-webhook") {
+            args.discordWebhookUrl = requireValue(argv, ++i, arg);
+            args.discord = true;
+        }
+        else if (arg === "--no-discord") args.discord = false;
         else if (arg === "--horizon") args.horizonTicks = Number(requireValue(argv, ++i, arg));
         else if (arg === "--help") {
             printHelp();
@@ -610,6 +646,15 @@ function parseArgs(argv: string[]): CliArgs {
         }
     }
     return args;
+}
+
+function discordConfig(args: CliArgs): DiscordWebhookConfig | undefined {
+    if (!args.discord) return undefined;
+    const url = args.discordWebhookUrl ?? process.env.AIB_DISCORD_WEBHOOK_URL;
+    if (!url) return undefined;
+    const config: DiscordWebhookConfig = { url };
+    if (process.env.AIB_DISCORD_USERNAME) config.username = process.env.AIB_DISCORD_USERNAME;
+    return config;
 }
 
 function requireValue(argv: string[], index: number, flag: string) {
@@ -645,6 +690,9 @@ Options:
   --horizon TICKS      Planning horizon for optimization. Defaults to 60.
   --map                Write and display a debug map after the Markdown summary. Default unless AIB_SHOW_MAP=0.
   --no-map             Disable debug map generation.
+  --discord-webhook URL
+                       Post the full Markdown summary to a Discord webhook.
+  --no-discord         Disable Discord webhook posting even if configured.
   --json               Print the full raw JSON result instead of a concise Markdown summary.
   --base-url URL       Defaults to NP_BASE_URL or https://np4.ironhelmet.com.
 
@@ -652,6 +700,12 @@ Environment:
   AIB_RECORD_GAME=0    Disable per-game scan/event recording.
   AIB_RECORD_DIR=PATH  Store game-#### folders under PATH instead of the current directory.
   AIB_SHOW_MAP=0       Disable debug map generation/display.
+  AIB_DISCORD_WEBHOOK_URL=URL
+                       Post full Markdown summaries to this Discord webhook.
+  AIB_DISCORD_WEBHOOK=0
+                       Disable Discord webhook posting.
+  AIB_DISCORD_USERNAME=NAME
+                       Optional displayed webhook username.
 `);
 }
 

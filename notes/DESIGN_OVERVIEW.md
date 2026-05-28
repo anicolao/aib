@@ -21,6 +21,8 @@ Core references:
   longer-term MILP design.
 - [DEFENSE_GRAPH_DESIGN.md](DEFENSE_GRAPH_DESIGN.md): defensive graph and hub
   model.
+- [DISCORD_WEBHOOK_DESIGN.md](DISCORD_WEBHOOK_DESIGN.md): local CLI Discord
+  reporting configuration.
 - [sync.md](sync.md), [npa.md](npa.md), [np4api.md](np4api.md), and
   [np-tools.md](np-tools.md): external reference notes.
 
@@ -239,6 +241,8 @@ kitty graphics when available.
 - [../src/star-value.ts](../src/star-value.ts): intrinsic star value.
 - [../src/diplomacy-style.ts](../src/diplomacy-style.ts): Gemini judging and
   flavoring.
+- [../src/discord-webhook.ts](../src/discord-webhook.ts): Discord webhook
+  Markdown chunking and posting.
 - [../src/debug-map.ts](../src/debug-map.ts): PNG renderer.
 - [../src/recorder.ts](../src/recorder.ts): JSONL turn-input recorder.
 - [../src/command.ts](../src/command.ts): command record shape.
