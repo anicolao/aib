@@ -1,264 +1,266 @@
 # Design Overview
 
-This is a first-pass design for evolving the Neptune's Pride Agent codebase from
-a passive information layer into an autonomous, cloud-hosted NP4 player. The
-central idea is to combine exact optimization for mechanical choices with a
-separate agentic layer for uncertain, social, and long-horizon decisions.
+This codebase is a TypeScript NP4 turn player. It can log into Iron Helmet,
+fetch one or more active games, build a replayable turn decision from live scan
+data, optionally submit orders and diplomacy, record inputs for later replay,
+and render concise CLI/debug-map output.
 
-The design should stay grounded in the raw scan model documented in
-[../API_OVERVIEW.md](../API_OVERVIEW.md), the generated types in
-[../src/types.ts](../src/types.ts), and the reference implementations described
-in this directory.
+The current implementation is not a complete autonomous strategist and does not
+yet contain a true MILP/LP turn solver. It is a deterministic turn pipeline with
+a portfolio infrastructure optimizer, battle-aware tactical routing, defensive
+hub logistics, bounded carrier construction, LLM-assisted diplomacy text, and
+recorded game telemetry. The intended direction is still solver-centered, but
+the shipped behavior is best described as a constrained planner with explicit
+objective scores and auditable heuristics.
 
-## Goals
+Core references:
 
-- Play a private NP4 game autonomously from scan data and submitted commands.
-- Make economy, industry, science, carrier, and route choices from explicit
-  objective functions rather than loose heuristics.
-- Preserve the distinction between known scan facts, inferred state, and
-  strategic speculation.
-- Play competently with and against human players, including negotiated trades,
-  alliance posture, threat assessment, and timing coordination.
-- Run as a scheduled Google Cloud Functions implementation with clear logs,
-  replayable decisions, and recoverable state.
+- [../API_OVERVIEW.md](../API_OVERVIEW.md): NP4 scan schema and API caveats.
+- [PROJECT.md](PROJECT.md): project notes and sibling reference directories.
+- [SOLVER_DESIGN.md](SOLVER_DESIGN.md): current portfolio solver plus the
+  longer-term MILP design.
+- [DEFENSE_GRAPH_DESIGN.md](DEFENSE_GRAPH_DESIGN.md): defensive graph and hub
+  model.
+- [sync.md](sync.md), [npa.md](npa.md), [np4api.md](np4api.md), and
+  [np-tools.md](np-tools.md): external reference notes.
 
-## Non-Goals for the First Iteration
+## Runtime Shape
 
-- Human-like personality, bluffing, or natural-language roleplay.
-- Real-time micro-optimization under clock pressure.
-- Autonomous play in public games without explicit consent.
-- Full replacement of the existing NPA UI.
-- General support for every historical Neptune's Pride API variant.
+The shared runtime is `runTurn` in [../src/run-turn.ts](../src/run-turn.ts).
+One invocation:
 
-## Tri-Layer Brain
+1. loads a scan from a file, public API key, or authenticated account session;
+2. optionally fetches diplomacy messages and event history;
+3. records scan, messages, and events into `game-####/*.jsonl`;
+4. calls `planTurn` in [../src/planner.ts](../src/planner.ts);
+5. optionally asks Gemini to judge and flavor diplomacy drafts;
+6. optionally submits orders, diplomacy, and turn-ready state.
 
-The player should split decisions by horizon and uncertainty.
+Entrypoints:
 
-| Layer | Component | Function |
-| --- | --- | --- |
-| Strategic | LLM Planner | Interprets global state, tracks player relationships, chooses diplomatic and technology posture, and selects high-level goals. |
-| Tactical | Graph Search / A* | Computes carrier routes, reinforcement paths, interception opportunities, and range-limited attacks. |
-| Operational | Linear Program / MILP | Allocates credits across infrastructure, gates, carriers, and possibly science targets under budget and timing constraints. |
+- [../src/cli.ts](../src/cli.ts): local dry-run and submit CLI. With account
+  credentials and no explicit game, it discovers active games and runs all of
+  them. It prints Markdown summaries, pipes through `glow` when available, and
+  can emit PNG debug maps.
+- [../src/function.ts](../src/function.ts): scheduled Google Cloud Functions
+  style handler that calls the same `runTurn` path.
+- [../src/turn-loop.ts](../src/turn-loop.ts): local loop that waits a
+  configurable delay, runs `node dist/cli.js --submit`, and allows pressing
+  Enter to submit immediately.
 
-The layers should communicate through typed state summaries and proposed
-actions, not through direct mutation of raw scan objects. Every chosen action
-should remain traceable back to the scan tick and objective that produced it.
+CLI defaults currently use a 60-tick horizon. The cloud-function environment
+path defaults to 30 unless `AIB_HORIZON_TICKS` is set, so deployment should set
+that explicitly when parity with local dry-runs matters.
 
-## State Model
+## Decision Record
 
-The bot should maintain several views of game state:
+`planTurn` returns a `DecisionRecord` containing:
 
-- Raw scan: the latest `scanning_data`, stored without dropping unknown fields.
-- Normalized state: friendly field names and derived indexes over stars, fleets,
-  players, tech, visibility, and ownership.
-- Belief state: inferred or merged facts from prior scans, allied scans, message
-  history, and event history.
-- Forecast state: simulated future ticks for fleet movement, production,
-  research, combat, and cash.
-- Decision ledger: actions considered, objective values, selected commands, and
-  rejected alternatives.
+- metadata for game, player, tick, production, turn mode, and dry-run mode;
+- cash and count summaries;
+- ordered command payloads and rationales;
+- diplomacy drafts and tech-transfer decisions;
+- combat summaries;
+- defense graph details;
+- damage/tick solver reports;
+- rejected alternatives and explanatory notes.
 
-The raw scan is authoritative for visible facts. The belief and forecast states
-must label uncertainty explicitly so the strategic layer does not mistake
-inference for observation.
+This record is the main audit boundary. The CLI summary is intentionally
+concise, but `--json` exposes the full decision for debugging and replay.
 
-## Operational Optimization
+## Planning Pipeline
 
-The first optimization engine should solve a bounded "star infrastructure
-problem" over a short look-ahead window.
+The current planner runs in this order:
 
-Candidate objective:
+1. Build owned scanned-star state and frontier weights.
+2. Build a defense graph and visible incoming attack list.
+3. Reserve idle carriers already sitting at defense hubs when the hub reserve
+   needs them.
+4. Plan tech-transfer responses and reserve trade cash.
+5. Pre-plan urgent defensive carrier builds.
+6. Pre-plan interior-to-hub carrier builds and core logistics carrier builds.
+7. Pre-plan bounded offensive carrier builds against high-value enemy stars.
+8. Reserve cash and ships for those mandatory/near-mandatory logistics choices.
+9. Run the portfolio damage/tick infrastructure optimizer.
+10. Emit tech transfers and possible research change to Weapons.
+11. Route existing tactical fleets for garrison, hub reserve, direct defense,
+    defense-graph reinforcement, and winning attacks.
+12. Execute carrier-build plans, neutral expansion, supply shuttles, core
+    logistics shuttles, underloaded carrier returns, and low-priority staging.
+13. Draft diplomacy and optional attack objections.
+14. Optionally mark turn-based games ready.
 
-- maximize frontier-relevant ship count at a target tick
-- include secondary value for industrial capacity, science growth, and cash
-  retained
-- penalize spending that cannot affect the selected horizon
+The ordering is important: tactical defense and reserved logistics constrain
+ships/cash before infrastructure and expansion consume them.
 
-Candidate decision variables:
+## Infrastructure Optimizer
 
-- buy or hold economy, industry, and science at each scanned owned star
-- buy or hold gates where legal and strategically relevant
-- build or defer carriers
-- optionally reserve credits for diplomacy or emergency orders
+Infrastructure is handled by
+[../src/damage-tick-solver.ts](../src/damage-tick-solver.ts). Despite the older
+"LP" language in some archived notes, the current implementation is a greedy
+portfolio search over current-turn E/I/S purchases:
 
-Candidate constraints:
+- It evaluates complete terminal states after each candidate purchase rather
+  than only immediate ratios.
+- It builds combat zones from defense hubs, threatened stars, reachable enemy
+  stars, reachable neutral stars, or owned frontier fallback stars.
+- It scores reachable ships/tick, damage/tick, projected Weapons timing,
+  economy payout inside the horizon, terminal infrastructure value, retained
+  cash, and science floor value.
+- It allows economy purchases only when the next submitted turn crosses a
+  production boundary.
+- Economy and science are location-weighted toward defendable stars; industry
+  receives frontier/reachability value through combat zones.
+- Industry and science are softened toward empire balance targets through
+  terminal-value decay rather than planner-level hard caps.
+- If Weapons looks strong enough relative to current research, the planner emits
+  a `change_research` order.
 
-- current and projected cash budget
-- infrastructure cost formulas from star resources and game config
-- production timing via `productionCounter` and `productionRate`
-- research timing via total science and visible tech costs
-- star visibility and ownership
-- carrier cost and fleet availability
+Known gap: carrier allocation, ship allocation, hard defense constraints, and
+multi-turn future infrastructure choices are still outside this optimizer. The
+longer-term target is described in [SOLVER_DESIGN.md](SOLVER_DESIGN.md).
 
-Although the notes call this "LP", most buy decisions are discrete. The
-implementation may need a mixed-integer linear program, dynamic programming, or
-a greedy relaxation backed by exact local search. The important requirement is
-not the solver label; it is that the objective, constraints, and selected build
-order are explicit and replayable.
+## Combat And Defense
 
-## Tactical Planning
+Combat math lives in [../src/battle.ts](../src/battle.ts). It projects star
+ships from current garrison, `yard`, industry, manufacturing, production rate,
+and ETA, then simulates NP-style combat with defender weapon bonus.
 
-The tactical layer should treat the galaxy as a weighted graph over stars and
-possibly in-flight fleet positions.
+The defensive graph in [../src/defense-graph.ts](../src/defense-graph.ts):
 
-Core responsibilities:
+- treats visible enemy scanned stars and some visible idle enemy fleets as
+  possible origins;
+- computes which owned stars each origin can hit within the horizon;
+- subtracts turn-jump ticks from defensive reaction windows in turn-based
+  games;
+- selects hubs greedily as a set-cover-like problem;
+- classifies stars as `interior`, `covered`, `self_hub`,
+  `exposed_high_value`, or `exposed_low_value`;
+- records uncovered threatened stars and reserve requirements.
 
-- compute fastest paths under propulsion range, gates, wormholes, and scanning
-  limits
-- estimate ETA and arrival order for friendly and visible hostile fleets
-- identify frontier stars where marginal ships matter
-- evaluate carrier splits, loops, garrisons, and reinforcements
-- feed combat-relevant deadlines into the operational optimizer
+The planner then uses the graph in several ways:
 
-Reference formulas should come from the synced client in `../sync` notes and
-from NPA's `timetravel`, `combatcalc`, and `visibility` modules. The first pass
-can use current visible data only; later versions can incorporate belief-state
-estimates for unscanned enemy movement.
+- local idle carriers may be dropped into garrisons or defense hubs;
+- existing carriers may reinforce visible attacks if they can arrive in time;
+- if no existing carrier can save a visible attack, the planner may build a
+  defensive or counterattack carrier;
+- interior ships and carriers are staged toward hubs;
+- all hubs have a standing mass target of
+  `max(reserveShipsRequired, coverageValue)`, so surplus logistics continues
+  toward under-massed hubs after urgent reserve gaps are filled;
+- minimum-load carriers can leave threatened/front hubs to resupply, but loaded
+  understrength carriers are not allowed to drain threatened hubs.
 
-## Strategic Agent
+Known gaps: the graph plans against visible threats only, does not guarantee
+survival against coordinated simultaneous multi-star attacks, and uses direct
+range checks rather than full route search with gates/wormholes.
 
-The strategic layer should operate on compressed, typed summaries rather than
-the full scan payload. It should set goals and policies such as:
+## Expansion, Attack, And Logistics
 
-- expand, consolidate, defend, tech-rush, or prepare an attack
-- preferred research target
-- reserve ratio for tactical flexibility
-- players to trade with, coordinate with, deter, attack, or ignore
-- acceptable risk thresholds for unscanned stars and unknown fleets
+Neutral expansion:
 
-The agent should be allowed to propose plans, but deterministic validators must
-reject illegal, unaffordable, or strategically inconsistent commands before they
-reach the game API.
+- uses the configured horizon, not only "before next production";
+- ignores neutrals already targeted by friendly fleets inside the horizon;
+- prefers intrinsic star value from natural resources, industry, and science;
+- requires five ships per capture;
+- can use idle carriers first, then build carriers within the logistics budget.
 
-## Human Diplomacy
+Attack planning:
 
-The first milestone should focus on playing well in games with human players.
-Diplomacy should be modeled as a constrained decision problem over incentives,
-trust, timing, and military leverage rather than as a personality simulator.
+- routes idle carriers only to enemy stars they can visibly win against;
+- skips low-value opportunistic targets;
+- avoids targets already under friendly attack;
+- can build at most one high-value offensive carrier per turn with surplus
+  ships and available cash.
 
-Responsibilities:
+Logistics:
 
-- track each player's public empire strength, visible military posture, known
-  messages, known trades, promises, threats, and prior cooperation
-- evaluate proposed cash, technology, and coordination trades as investments
-  with expected strategic return
-- identify mutually beneficial trades and timing agreements the bot can explain
-  clearly to a human player
-- maintain an explicit trust and risk model without assuming any player will act
-  predictably
-- separate generated message drafts from game-state actions so communication can
-  be reviewed or gated independently
+- direct supply shuttles originate only from interior, unthreatened stars and
+  only target hubs with urgent reserve or standing-mass shortfall;
+- core logistics can move ships one hop along owned-star paths toward a hub or
+  other high-value sink;
+- carrier builds can support hub supply and core logistics when no idle carrier
+  is available;
+- low-priority staging builds one carrier from a large surplus star toward enemy
+  space only when the cash reserve allows.
 
-The planner may draft concise messages, but the first implementation should
-prefer auditable recommendations and deterministic trade validation over broad
-autonomous negotiation.
+## Diplomacy And Tech Trades
 
-## Execution Environment
+Diplomacy is intentionally constrained. The deterministic planner:
 
-The primary runtime target is Google Cloud Functions. A scheduled invocation
-should wake up roughly once per hour, fetch the latest game state, update stored
-state, make bounded decisions, and submit any validated commands.
+- identifies neighboring active empires;
+- opens with research disclosure and tech-trade cooperation;
+- treats replies within 8 hours as friendly enough to continue a thread;
+- includes thread context for replies;
+- avoids repeating routine trade confirmations once the thread already contains
+  an agreement;
+- drafts objections to visible inbound attacks;
+- reacts to received tech by reciprocating only when the thread names a concrete
+  equivalent-level exchange and no aggression blocks trust.
 
-Runtime responsibilities:
+If `GEMINI_API_KEY` is available, [../src/diplomacy-style.ts](../src/diplomacy-style.ts)
+does two LLM-mediated tasks:
 
-- run from Cloud Scheduler or an equivalent scheduled trigger
-- fetch scans on each hourly invocation, with turn-based games allowed to skip
-  submission when no new turn is available
-- persist raw scans, normalized snapshots, forecasts, decisions, and submitted
-  commands between stateless function invocations
-- use managed secrets for API keys and game credentials
-- make invocations idempotent so retries do not duplicate orders
-- expose structured logs and decision traces for review
-- support dry-run mode where decisions are produced but not submitted
+- judge otherwise-unhandled inbound messages for whether a response is warranted
+  and produce a structured JSON result;
+- rewrite draft text with a stable persona selected from `(gameId + playerUid)`.
 
-The first lab environment should be private turn-based games with consenting
-human players, plus replayed historical scans where available. This keeps the
-focus on human-player diplomacy and strategic quality while avoiding real-time
-latency concerns.
+The prompt explicitly requires NP hyperlink syntax for player and star names.
+The model does not decide mechanical orders.
 
-## Local Debug CLI
+## Recording And Debugging
 
-The cloud function should share its core implementation with a CLI entry point.
-The CLI should run one decision cycle and emit the same artifacts a single cloud
-function invocation would produce:
+[../src/recorder.ts](../src/recorder.ts) appends replay inputs under
+`game-####/`:
 
-- scan metadata and freshness
-- normalized state summary
-- forecast assumptions
-- candidate actions and objective scores
-- selected actions
-- rejected actions with reasons
-- command payloads in dry-run mode
+- `scandata.jsonl`
+- `events.jsonl`
 
-The local development environment may be a nix-darwin MacOS laptop, but that is
-only a development convenience. The code should not assume the laptop runtime is
-the production deployment target.
+Each line includes metadata and the raw scan/message/event payloads needed to
+replay or analyze a turn.
 
-## Command Boundary
+[../src/debug-map.ts](../src/debug-map.ts) renders a PNG showing stars,
+fleets, visible paths, defense threats, hubs and coverage, and planned orders.
+The CLI writes `game-####/debug-map-tick-####.png` and can display it through
+kitty graphics when available.
 
-The command subsystem should be narrow and auditable. It should accept validated
-intentions from the planners and translate them into game actions such as:
+## Source Map
 
-- buy infrastructure
-- build carrier
-- create or update fleet orders
-- send cash or technology
-- set research target
-- end turn where applicable
+- [../src/types.ts](../src/types.ts): scan data types.
+- [../src/client.ts](../src/client.ts): login, scan fetch, message/event fetch,
+  command submission, diplomacy submission, turn-ready submission.
+- [../src/planner.ts](../src/planner.ts): main decision pipeline.
+- [../src/damage-tick-solver.ts](../src/damage-tick-solver.ts): infrastructure
+  portfolio optimizer and research recommendation.
+- [../src/defense-graph.ts](../src/defense-graph.ts): threat graph, hub
+  selection, star classification.
+- [../src/battle.ts](../src/battle.ts): combat and projected star ships.
+- [../src/star-graph.ts](../src/star-graph.ts): distance, travel ticks, range.
+- [../src/star-value.ts](../src/star-value.ts): intrinsic star value.
+- [../src/diplomacy-style.ts](../src/diplomacy-style.ts): Gemini judging and
+  flavoring.
+- [../src/debug-map.ts](../src/debug-map.ts): PNG renderer.
+- [../src/recorder.ts](../src/recorder.ts): JSONL turn-input recorder.
+- [../src/command.ts](../src/command.ts): command record shape.
+- [../src/run-turn.ts](../src/run-turn.ts), [../src/cli.ts](../src/cli.ts),
+  [../src/function.ts](../src/function.ts), [../src/turn-loop.ts](../src/turn-loop.ts):
+  invocation surfaces.
 
-No strategic layer should submit commands directly. The command boundary should
-perform final validation against the latest scan and should fail closed if the
-scan is stale, the action is illegal, or the expected game state has changed.
+## Current Limitations
 
-## Testing Strategy
+- No full LP/MILP model is active yet.
+- The infrastructure solver is greedy portfolio search, not global optimization.
+- Tactical movement is mostly direct-leg or one-hop logistics; full A* route
+  planning is not implemented.
+- Gates, wormholes, and advanced client movement rules are not fully modeled.
+- The planner uses visible data only; belief-state inference from scan history
+  is not yet used for decisions.
+- Diplomacy has thread-aware drafting and tech-transfer validation, but no
+  durable trust model.
+- There is no dedicated test suite beyond TypeScript compilation and ad hoc
+  replay/dry-run checks.
 
-Useful test layers:
+## Archived Notes
 
-- schema tests against `api.sample.json` and NPA sample scans
-- formula tests for range, scanning, gates, wormholes, production, and ETA
-- optimizer tests with small hand-solvable economies
-- replay tests over saved scan sequences
-- dry-run integration tests in private turn-based games
-- CLI/function parity tests that compare one CLI run with one function
-  invocation over the same stored input
-- regression tests for command validation and stale-scan rejection
-
-The first useful milestone is not "wins a game". It is a replayable turn where
-the bot explains its chosen purchases, routes, diplomacy actions, and omitted
-alternatives from a fixed scan.
-
-The post-MVP implementation plan is expanded in
-[POST_MVP_DESIGN.md](POST_MVP_DESIGN.md). That document translates this
-architecture into the next concrete planner rewrite: forecast state, bounded
-infrastructure search, tactical task search, and carrier budget policy.
-
-## First Metric Decision
-
-The first operational metric should prioritize maximum frontier-relevant fleet
-count at a chosen future tick.
-
-Reasons:
-
-- it directly connects economy purchases to combat outcomes
-- it forces the optimizer to respect production timing and travel time
-- it produces decisions that can be checked against visible threats
-- it is easier to validate than fastest total tech advancement
-
-Fastest tech advancement should remain a secondary or strategic objective. The
-strategic layer can choose tech-rush mode when the board state permits, but the
-first solver should optimize for ships that can affect a concrete frontier by a
-specific tick.
-
-## Open Questions
-
-- Which solver should be used in the TypeScript runtime, and does it need MILP
-  support immediately?
-- What is the minimal legal command API for private-game automation?
-- Which Google Cloud storage service should hold scan history, decisions, and
-  idempotency records?
-- How much belief-state history is needed before the bot can make useful
-  unscanned-fleet assumptions?
-- How should risk tolerance be represented so an LLM can set policy without
-  bypassing deterministic safety checks?
-- Which NPA formulas should be ported first, and which should remain reference
-  material until needed?
+Historical milestone plans have been moved under [archive](archive/). They are
+kept for context but should not be treated as current design guidance.

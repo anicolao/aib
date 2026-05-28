@@ -71,7 +71,9 @@ matter, not merely total empire production.
 
 ## Planning Horizon
 
-The default horizon should remain `H = 30` ticks.
+The active CLI default is `H = 60` ticks. The Google Cloud Function environment
+path still falls back to `H = 30` unless `AIB_HORIZON_TICKS` is set, so
+deployment should set the horizon explicitly.
 
 The model also needs a smaller set of action ticks:
 

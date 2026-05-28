@@ -1,10 +1,17 @@
 # Defense Graph Design
 
-The current player can issue legal orders, expand, and react to visible attacks,
-but it still lacks an empire-level model of space. It needs to understand which
-stars threaten which other stars, where friendly ships can respond in time, and
-which positions can defend several neighbors from one reserve. This document
-defines a first pass at that model.
+Status: implemented as [../src/defense-graph.ts](../src/defense-graph.ts) and
+consumed by [../src/planner.ts](../src/planner.ts). This document remains the
+detailed reference for the current hub model, with the caveat that the code
+still plans against visible threats only and does not yet handle gates,
+wormholes, or simultaneous multi-front enemy coordination as hard constraints.
+
+The current player can issue legal orders, expand, react to visible attacks, and
+build a first-pass empire-level model of space. It understands which visible
+enemy origins threaten which owned stars, where friendly ships can respond in
+time, and which positions can defend several neighbors from one reserve. This
+document defines that first-pass model and the next constraints it should grow
+to cover.
 
 ## Goals
 
@@ -218,6 +225,16 @@ The selected hub plan should include:
 - carriers needed to stage the reserve
 - stars that remain uncovered
 
+The implementation also gives every hub a standing mass target:
+
+```text
+standingMassTarget = max(reserveShipsRequired, coverageValue)
+```
+
+Urgent reserve deficits still take priority, but once they are covered the
+logistics phases continue moving surplus ships toward hubs that are below this
+standing target.
+
 ## Planner Priority
 
 The turn planner should run defense before expansion.
@@ -324,6 +341,7 @@ Suggested modules:
   - calls the battle calculator for required reinforcement
 
 - `src/defenseGraph.ts`
+  - superseded by `src/defense-graph.ts`
   - computes candidate hub coverage
   - selects defensive hubs
   - returns reserve requirements and uncovered stars
