@@ -983,6 +983,22 @@ function planFormalAlliances(
                     reason: `accept formal alliance offered by ${other.alias}; ${assessment.reason}`,
                 });
                 acceptedPlayerUids.push(other.uid);
+                const draft = allianceDiplomacyDraft(
+                    scan,
+                    player,
+                    other,
+                    "Formal alliance accepted",
+                    [
+                        `Hi ${npLink(other.alias)}, I have accepted your formal alliance request.`,
+                        `That should make our border safer immediately: ${assessment.reason}.`,
+                        "Let's use the alliance to keep exploration traffic peaceful and coordinate borders from here.",
+                        `- ${npLink(player.alias)}`,
+                    ].join("\n\n"),
+                    `accepted ${other.alias}'s formal alliance offer; draft acknowledges the action`,
+                    history,
+                    threadKey,
+                );
+                diplomacyDrafts.push(draft);
             } else {
                 rejected.push(`declined formal alliance offer from ${other.alias}: ${assessment.reason}`);
             }
@@ -1009,27 +1025,49 @@ function planFormalAlliances(
             .slice(0, 4)
             .map((collision) => `${npLink(collision.targetName)} around tick ${(scan.tick + collision.eta).toFixed(1)}`)
             .join(", ");
-        const draft: DiplomacyDraft = {
-            recipientUid: other.uid,
-            recipientAlias: other.alias,
-            recipientColor: other.color,
-            fromColor: playerColorStyle(player.color),
-            friendly: true,
-            subject: "Formal alliance request",
-            body: [
+        diplomacyDrafts.push(allianceDiplomacyDraft(
+            scan,
+            player,
+            other,
+            "Formal alliance request",
+            [
                 `Hi ${npLink(other.alias)}, our exploration carriers appear committed toward the same space: ${targetList}.`,
                 "Since carriers already in flight cannot be redirected, the cleanest way to avoid accidental casualties is a formal alliance.",
                 "I have sent a formal alliance request. If you accept it, our carriers will avoid fighting over exploration traffic and we can coordinate borders from there.",
                 `- ${npLink(player.alias)}`,
             ].join("\n\n"),
-            reason: `${other.alias} has unavoidable exploration collision risk; draft explains the formal alliance request`,
-        };
-        if (history.length > 0) draft.context = threadContext(history, scan.playerUid, other.alias);
-        if (threadKey) draft.threadKey = threadKey;
-        diplomacyDrafts.push(draft);
+            `${other.alias} has unavoidable exploration collision risk; draft explains the formal alliance request`,
+            history,
+            threadKey,
+        ));
     }
 
     return { commands, diplomacyDrafts, acceptedPlayerUids };
+}
+
+function allianceDiplomacyDraft(
+    scan: ScanningData,
+    player: Player,
+    other: Player,
+    subject: string,
+    body: string,
+    reason: string,
+    history: DiplomacyEvent[],
+    threadKey?: string,
+): DiplomacyDraft {
+    const draft: DiplomacyDraft = {
+        recipientUid: other.uid,
+        recipientAlias: other.alias,
+        recipientColor: other.color,
+        fromColor: playerColorStyle(player.color),
+        friendly: true,
+        subject,
+        body,
+        reason,
+    };
+    if (history.length > 0) draft.context = threadContext(history, scan.playerUid, other.alias);
+    if (threadKey) draft.threadKey = threadKey;
+    return draft;
 }
 
 function preliminaryIncomingAttackerUids(scan: ScanningData) {

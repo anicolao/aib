@@ -379,6 +379,7 @@ function renderDiplomacy(decision: DecisionRecord) {
         ...decision.diplomacyDrafts.map((draft) => [
             `- ${draft.threadKey ? "Reply" : "New thread"} to **${draft.recipientAlias}**: ${draft.subject}`,
             `  ${draft.reason}`,
+            ...(draft.flavorError ? [`  Flavoring failed: ${draft.flavorError}`] : []),
         ].join("\n")),
         "",
     ];
