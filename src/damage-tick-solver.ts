@@ -1,4 +1,5 @@
 import type { DefenseGraphPlan } from "./defense-graph.js";
+import { isEnemyPlayer } from "./relations.js";
 import { playerRange, starDistance, travelTicks } from "./star-graph.js";
 import { intrinsicStarValue } from "./star-value.js";
 import type { GameConfig, Player, ScannedStar, ScanningData, Star, TechInfo } from "./types.js";
@@ -403,7 +404,7 @@ function buildZones(
 
     const range = playerRange(player);
     for (const star of Object.values(scan.stars)) {
-        if (star.puid === scan.playerUid) continue;
+        if (star.puid === scan.playerUid || isFormalAllyTarget(scan, star)) continue;
         const nearestOwned = nearestOwnedStar(stars, star);
         if (!nearestOwned) continue;
         const distance = starDistance(nearestOwned, star);
@@ -449,7 +450,7 @@ function maxEnemyWeaponsForTargets(scan: ScanningData, targetUids: number[]) {
     let best = bestVisibleEnemyWeapons(scan);
     for (const fleet of Object.values(scan.fleets)) {
         const targetUid = fleet.o[0]?.[1];
-        if (fleet.puid !== scan.playerUid && targetUid !== undefined && threats.has(targetUid)) {
+        if (isEnemyPlayer(scan, fleet.puid) && targetUid !== undefined && threats.has(targetUid)) {
             best = Math.max(best, techLevel(scan.players[String(fleet.puid)], TECH.WEAPONS));
         }
     }
@@ -670,8 +671,12 @@ function scienceCostFor(config: GameConfig, star: ScannedStar) {
 
 function bestVisibleEnemyWeapons(scan: ScanningData) {
     return Object.values(scan.players)
-        .filter((player) => player.uid !== scan.playerUid && player.totalStars > 0)
+        .filter((player) => isEnemyPlayer(scan, player.uid))
         .reduce((best, player) => Math.max(best, techLevel(player, TECH.WEAPONS)), 1);
+}
+
+function isFormalAllyTarget(scan: ScanningData, star: Star) {
+    return star.puid > 0 && !isEnemyPlayer(scan, star.puid);
 }
 
 function techLevel(player: Player | undefined, kind: number) {

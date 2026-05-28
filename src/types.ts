@@ -168,7 +168,7 @@ export interface GameConfig {
     starsForVictory: number;
     sfvDecay: number;
     playerType: number;
-    alliances: 0 | 1;
+    alliances: 0 | 1 | 2 | 3;
     fealty: 0 | 1;
     anonymity: 0 | 1;
     autoStart: 0 | 1;
@@ -378,7 +378,8 @@ export interface Player {
      */
     cash: number;
     /**
-     * Map of other player UIDs to diplomatic status (0: Peace, 3: War, etc.).
+     * Map of other player UIDs to diplomatic status (0: formal alliance, 1: alliance requested by us,
+     * 2: alliance offered by them, 3: war).
      */
     war: Record<string, number>;
     /**

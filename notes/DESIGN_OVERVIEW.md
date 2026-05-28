@@ -132,6 +132,8 @@ The defensive graph in [../src/defense-graph.ts](../src/defense-graph.ts):
 
 - treats visible enemy scanned stars and some visible idle enemy fleets as
   possible origins;
+- excludes established formal allies from enemy origins and threat
+  classification;
 - computes which owned stars each origin can hit within the horizon;
 - subtracts turn-jump ticks from defensive reaction windows in turn-based
   games;
@@ -197,6 +199,11 @@ Diplomacy is intentionally constrained. The deterministic planner:
 - avoids repeating routine trade confirmations once the thread already contains
   an agreement;
 - drafts objections to visible inbound attacks;
+- requests a formal alliance when committed exploration carriers have visible,
+  unavoidable collision risk with another empire at a neutral star;
+- accepts formal alliance offers when the other empire is not attacking, has not
+  attacked recently, and the alliance has an immediate collision, border, or
+  research-visibility benefit;
 - reacts to received tech by reciprocating only when the thread names a concrete
   equivalent-level exchange and no aggression blocks trust.
 
@@ -259,8 +266,8 @@ kitty graphics when available.
 - Gates, wormholes, and advanced client movement rules are not fully modeled.
 - The planner uses visible data only; belief-state inference from scan history
   is not yet used for decisions.
-- Diplomacy has thread-aware drafting and tech-transfer validation, but no
-  durable trust model.
+- Diplomacy has thread-aware drafting, formal-alliance handling, and
+  tech-transfer validation, but no durable trust model.
 - There is no dedicated test suite beyond TypeScript compilation and ad hoc
   replay/dry-run checks.
 

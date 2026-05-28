@@ -1,4 +1,5 @@
 import { estimateStarBattle } from "./battle.js";
+import { isEnemyPlayer } from "./relations.js";
 import { playerRange, starDistance, travelTicks } from "./star-graph.js";
 import { intrinsicStarValue } from "./star-value.js";
 import type { Fleet, Player, ScannedStar, ScanningData, Star, TechInfo } from "./types.js";
@@ -162,7 +163,7 @@ function computeThreats(scan: ScanningData, ownedStars: ScannedStar[], horizonTi
 function visibleEnemyOrigins(scan: ScanningData): EnemyOrigin[] {
     return [
         ...Object.values(scan.stars)
-            .filter((star): star is ScannedStar => isScanned(star) && star.puid > 0 && star.puid !== scan.playerUid && activePlayer(scan, star.puid))
+            .filter((star): star is ScannedStar => isScanned(star) && star.puid > 0 && isEnemyPlayer(scan, star.puid))
             .map((star) => {
                 const orbiting = orbitingShipsAt(scan, star.uid, star.puid, 0);
                 return {
@@ -177,7 +178,7 @@ function visibleEnemyOrigins(scan: ScanningData): EnemyOrigin[] {
                 };
             }),
         ...Object.values(scan.fleets)
-            .filter((fleet) => fleet.puid !== scan.playerUid && fleet.st > 0 && fleet.ouid > 0 && fleet.o.length === 0 && activePlayer(scan, fleet.puid))
+            .filter((fleet) => isEnemyPlayer(scan, fleet.puid) && fleet.st > 0 && fleet.ouid > 0 && fleet.o.length === 0)
             .filter((fleet) => scan.stars[String(fleet.ouid)]?.puid !== fleet.puid)
             .map((fleet) => ({
                 enemyUid: fleet.puid,
@@ -426,11 +427,6 @@ function orbitingShipsAt(scan: ScanningData, starUid: number, ownerUid: number, 
 
 function isScanned(star: Star): star is ScannedStar {
     return (star as { v: unknown }).v === 1 || (star as { v: unknown }).v === "1";
-}
-
-function activePlayer(scan: ScanningData, uid: number) {
-    const player = scan.players[String(uid)];
-    return player !== undefined && player.totalStars > 0;
 }
 
 function weaponsValue(player: Player | undefined) {

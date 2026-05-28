@@ -3,6 +3,7 @@ import type { PlannedCommand } from "./command.js";
 import { estimateBattle, estimateStarBattle, projectedStarShips, type BattleEstimate } from "./battle.js";
 import { computeDefenseGraph, type DefenseGraphPlan } from "./defense-graph.js";
 import { optimizeDamageTickInfrastructure, type DamageTickSolverPlan } from "./damage-tick-solver.js";
+import { activePlayer, alliancesEnabled, hasAllianceOfferFrom, hasRequestedAlliance, isEnemyPlayer, isFormalAlly } from "./relations.js";
 import { intrinsicStarValue } from "./star-value.js";
 
 export interface PlannerConfig {
@@ -399,6 +400,11 @@ interface TechTransferPlan {
     reserveCost: number;
 }
 
+interface AlliancePlan {
+    commands: PlannedCommand[];
+    diplomacyDrafts: DiplomacyDraft[];
+}
+
 interface TechTradeDecision {
     techKind: number;
     reason: string;
@@ -456,6 +462,7 @@ export function planTurn(
     const tacticalFleetUids = new Set(tacticalPlan.assignments.map((assignment) => assignment.fleet.uid));
     reserveIdleDefenseHubFleets(scan, ownFleets, tacticalPlan.defenseGraph, tacticalFleetUids, rejected);
     const techTransferPlan = planTechTransfers(scan, diplomacyMessages, gameEvents, tacticalPlan);
+    const alliancePlan = planFormalAlliances(scan, ownFleets, diplomacyMessages, gameEvents, tacticalPlan, rejected);
     const defensiveCarrierPlan = config.buildCarrier
         ? planDefensiveCarrierBuilds(scan, stars, tacticalPlan, safeNumber(player.cash, 0), techTransferPlan.reserveCost, 0, config.horizonTicks, rejected)
         : { assignments: [], buildCount: 0, buildCost: 0 };
@@ -519,6 +526,7 @@ export function planTurn(
 
     commands.push(...techTransferPlan.commands);
     cash -= techTransferPlan.reserveCost;
+    commands.push(...alliancePlan.commands);
 
     if (infrastructurePlan.solver.recommendResearchChange && infrastructurePlan.solver.selectedResearchKind === TECH.WEAPONS) {
         commands.push({
@@ -563,9 +571,13 @@ export function planTurn(
         });
     }
 
-    const techDraftRecipients = new Set(techTransferPlan.diplomacyDrafts.map((draft) => draft.recipientUid));
+    const techDraftRecipients = new Set([
+        ...techTransferPlan.diplomacyDrafts.map((draft) => draft.recipientUid),
+        ...alliancePlan.diplomacyDrafts.map((draft) => draft.recipientUid),
+    ]);
     const diplomacyDrafts = [
         ...techTransferPlan.diplomacyDrafts,
+        ...alliancePlan.diplomacyDrafts,
         ...draftDiplomacy(scan, diplomacyMessages, techDraftRecipients, infrastructurePlan.solver.selectedResearchKind),
     ];
 
@@ -917,6 +929,174 @@ function planTechTransfers(
     }
 
     return { commands, diplomacyDrafts, reserveCost };
+}
+
+function planFormalAlliances(
+    scan: ScanningData,
+    ownFleets: Fleet[],
+    diplomacyMessages: unknown[],
+    gameEvents: unknown[],
+    tacticalPlan: TacticalPlan,
+    rejected: string[],
+): AlliancePlan {
+    if (!alliancesEnabled(scan)) return { commands: [], diplomacyDrafts: [] };
+
+    const player = scan.players[String(scan.playerUid)];
+    if (!player) return { commands: [], diplomacyDrafts: [] };
+
+    const commands: PlannedCommand[] = [];
+    const diplomacyDrafts: DiplomacyDraft[] = [];
+    const incomingAttackerUids = new Set(tacticalPlan.incomingAttacks.map((attack) => attack.attacker.uid));
+    const collisions = unavoidableExplorationCollisions(scan, ownFleets);
+    const collisionsByPlayer = new Map<number, ReturnType<typeof unavoidableExplorationCollisions>>();
+    for (const collision of collisions) {
+        const entries = collisionsByPlayer.get(collision.otherUid) ?? [];
+        entries.push(collision);
+        collisionsByPlayer.set(collision.otherUid, entries);
+    }
+
+    for (const other of Object.values(scan.players).filter((candidate) => candidate.uid !== scan.playerUid && activePlayer(scan, candidate.uid))) {
+        const history = diplomacyHistoryWith(scan.playerUid, other.uid, diplomacyMessages);
+        const threadKey = latestMessageFrom(other.uid, history)?.threadKey
+            ?? latestMessageFrom(scan.playerUid, history)?.threadKey;
+
+        if (hasAllianceOfferFrom(scan, other.uid)) {
+            const assessment = assessAllianceBenefit(scan, other, gameEvents, incomingAttackerUids, collisionsByPlayer.get(other.uid) ?? []);
+            if (assessment.accept) {
+                commands.push({
+                    kind: "alliance",
+                    order: `accept_peace,${other.uid}`,
+                    reason: `accept formal alliance offered by ${other.alias}; ${assessment.reason}`,
+                });
+            } else {
+                rejected.push(`declined formal alliance offer from ${other.alias}: ${assessment.reason}`);
+            }
+            continue;
+        }
+
+        if (isFormalAlly(scan, other.uid) || hasRequestedAlliance(scan, other.uid)) continue;
+        const playerCollisions = collisionsByPlayer.get(other.uid) ?? [];
+        if (playerCollisions.length === 0) continue;
+        const aggr = aggressionStatus(scan, other.uid, gameEvents, incomingAttackerUids);
+        if (aggr.incoming || aggr.recent) {
+            rejected.push(`skipped formal alliance offer to ${other.alias}: current or recent aggression makes exploration collision diplomacy inappropriate`);
+            continue;
+        }
+        if (recentAllianceOffer(history, scan.playerUid)) continue;
+
+        commands.push({
+            kind: "alliance",
+            order: `request_peace,${other.uid}`,
+            reason: `request formal alliance from ${other.alias} because visible exploration fleets have unavoidable collision risk at ${playerCollisions.map((collision) => collision.targetName).join(", ")}`,
+        });
+
+        const targetList = playerCollisions
+            .slice(0, 4)
+            .map((collision) => `${npLink(collision.targetName)} around tick ${(scan.tick + collision.eta).toFixed(1)}`)
+            .join(", ");
+        const draft: DiplomacyDraft = {
+            recipientUid: other.uid,
+            recipientAlias: other.alias,
+            recipientColor: other.color,
+            fromColor: playerColorStyle(player.color),
+            friendly: true,
+            subject: "Formal alliance request",
+            body: [
+                `Hi ${npLink(other.alias)}, our exploration carriers appear committed toward the same space: ${targetList}.`,
+                "Since carriers already in flight cannot be redirected, the cleanest way to avoid accidental casualties is a formal alliance.",
+                "I have sent a formal alliance request. If you accept it, our carriers will avoid fighting over exploration traffic and we can coordinate borders from there.",
+                `- ${npLink(player.alias)}`,
+            ].join("\n\n"),
+            reason: `${other.alias} has unavoidable exploration collision risk; draft explains the formal alliance request`,
+        };
+        if (history.length > 0) draft.context = threadContext(history, scan.playerUid, other.alias);
+        if (threadKey) draft.threadKey = threadKey;
+        diplomacyDrafts.push(draft);
+    }
+
+    return { commands, diplomacyDrafts };
+}
+
+function unavoidableExplorationCollisions(scan: ScanningData, ownFleets: Fleet[]) {
+    const turnWindow = scan.turnBased === 1 ? Math.max(1, scan.config.turnJumpTicks) : 1;
+    const collisions: Array<{
+        otherUid: number;
+        otherAlias: string;
+        targetUid: number;
+        targetName: string;
+        eta: number;
+    }> = [];
+    const movingOwn = ownFleets
+        .map((fleet) => firstFleetArrival(scan, fleet))
+        .filter((arrival): arrival is NonNullable<typeof arrival> => Boolean(arrival))
+        .filter((arrival) => arrival.target.puid <= 0);
+    if (movingOwn.length === 0) return collisions;
+
+    for (const otherFleet of Object.values(scan.fleets).filter((fleet) => isEnemyPlayer(scan, fleet.puid))) {
+        const otherArrival = firstFleetArrival(scan, otherFleet);
+        if (!otherArrival || otherArrival.target.puid > 0) continue;
+        for (const ownArrival of movingOwn) {
+            if (ownArrival.target.uid !== otherArrival.target.uid) continue;
+            if (Math.abs(ownArrival.eta - otherArrival.eta) > turnWindow) continue;
+            const other = scan.players[String(otherFleet.puid)];
+            if (!other) continue;
+            collisions.push({
+                otherUid: other.uid,
+                otherAlias: other.alias,
+                targetUid: ownArrival.target.uid,
+                targetName: ownArrival.target.n,
+                eta: Math.max(ownArrival.eta, otherArrival.eta),
+            });
+        }
+    }
+
+    return collisions.sort((a, b) => a.eta - b.eta || a.otherUid - b.otherUid || a.targetUid - b.targetUid);
+}
+
+function firstFleetArrival(scan: ScanningData, fleet: Fleet) {
+    const targetUid = fleet.o[0]?.[1];
+    if (targetUid === undefined) return undefined;
+    const target = scan.stars[String(targetUid)];
+    if (!target) return undefined;
+    return {
+        target,
+        eta: etaFromFleet(scan, fleet, target),
+    };
+}
+
+function assessAllianceBenefit(
+    scan: ScanningData,
+    other: Player,
+    gameEvents: unknown[],
+    incomingAttackerUids: Set<number>,
+    collisions: ReturnType<typeof unavoidableExplorationCollisions>,
+) {
+    const aggr = aggressionStatus(scan, other.uid, gameEvents, incomingAttackerUids);
+    if (aggr.incoming) return { accept: false, reason: "they have visible attacks inbound" };
+    if (aggr.recent) return { accept: false, reason: "they attacked us in the last 30 ticks" };
+    if (collisions.length > 0) return { accept: true, reason: `it avoids unavoidable exploration collision risk at ${collisions.map((collision) => collision.targetName).join(", ")}` };
+
+    const ourStars = Object.values(scan.stars).filter((star) => star.puid === scan.playerUid);
+    const theirStars = Object.values(scan.stars).filter((star) => star.puid === other.uid);
+    const distance = nearestDistanceBetweenEmpires(ourStars, theirStars);
+    const range = rangeValue(scan.players[String(scan.playerUid)]);
+    if (Number.isFinite(distance) && distance <= range * 4) {
+        return { accept: true, reason: `nearby empire at ${distance.toFixed(2)} ly; alliance improves border safety and scan sharing` };
+    }
+
+    const us = scan.players[String(scan.playerUid)];
+    if (other.totalScience >= Math.max(1, safeNumber(us?.totalScience, 0) * 0.5)) {
+        return { accept: true, reason: "their science base makes shared scan and research visibility strategically useful" };
+    }
+
+    return { accept: false, reason: "no current collision, border, or research benefit is visible" };
+}
+
+function recentAllianceOffer(history: DiplomacyEvent[], myUid: number) {
+    const latestOutbound = latestMessageFrom(myUid, history);
+    return latestOutbound?.body !== undefined
+        && /formal alliance|alliance request|request_peace/i.test(latestOutbound.body)
+        && Date.now() - latestOutbound.created <= 24 * 60 * 60 * 1000;
 }
 
 function receivedTechEvents(scan: ScanningData, gameEvents: unknown[]): SharedTechnologyEvent[] {
@@ -1898,7 +2078,7 @@ function isCarrierReturnOrigin(
 }
 
 function frontierSupplyScore(scan: ScanningData, star: MutableStar) {
-    const incoming = Object.values(scan.fleets).some((fleet) => fleet.puid !== scan.playerUid && fleet.o[0]?.[1] === star.uid)
+    const incoming = Object.values(scan.fleets).some((fleet) => isEnemyPlayer(scan, fleet.puid) && fleet.o[0]?.[1] === star.uid)
         ? 4
         : 0;
     const shipNeed = Math.max(0, scan.tick - star.st) / Math.max(1, scan.tick);
@@ -1947,7 +2127,7 @@ function defenseSupplyScore(
     const hub = defenseGraph.hubs.find((entry) => entry.hubStarUid === star.uid);
     const reserveNeed = hub ? Math.max(0, hub.reserveShipsRequired - hub.currentReserveShips) : 0;
     const standingShortfall = hub ? hubStandingMassShortfall(hub) : 0;
-    const incoming = Object.values(scan.fleets).some((fleet) => fleet.puid !== scan.playerUid && fleet.o[0]?.[1] === star.uid)
+    const incoming = Object.values(scan.fleets).some((fleet) => isEnemyPlayer(scan, fleet.puid) && fleet.o[0]?.[1] === star.uid)
         ? 30
         : 0;
     const value = territoryValue(star);
@@ -2227,7 +2407,7 @@ function bestOffensiveCarrierBuild(
     const speed = Math.max(scan.fleetSpeed, 0.0001);
     const margin = offensiveBattleMargin(scan);
     return Object.values(scan.stars)
-        .filter((target): target is ScannedStar => isScanned(target) && target.puid > 0 && target.puid !== scan.playerUid)
+        .filter((target): target is ScannedStar => isScanned(target) && target.puid > 0 && isEnemyPlayer(scan, target.puid))
         .filter((target) => !attackedTargetUids.has(target.uid))
         .filter(isWorthOpportunisticEnemyAttack)
         .flatMap((target) => stars.map((source) => {
@@ -2598,7 +2778,7 @@ function stagingAssignment(
     const range = rangeValue(scan.players[String(scan.playerUid)]);
     const speed = Math.max(scan.fleetSpeed, 0.0001);
     const enemyStars = Object.values(scan.stars)
-        .filter((star) => star.puid > 0 && star.puid !== scan.playerUid && activePlayer(scan, star.puid));
+        .filter((star) => star.puid > 0 && isEnemyPlayer(scan, star.puid));
     if (enemyStars.length === 0) return undefined;
 
     return stars
@@ -2631,7 +2811,7 @@ function stagingAssignment(
 function visibleIncomingAttacks(scan: ScanningData, stars: MutableStar[]): IncomingAttack[] {
     const starsByUid = new Map(stars.map((star) => [star.uid, star]));
     return Object.values(scan.fleets)
-        .filter((fleet) => fleet.puid !== scan.playerUid && fleet.o.length > 0)
+        .filter((fleet) => isEnemyPlayer(scan, fleet.puid) && fleet.o.length > 0)
         .map((fleet) => {
             const routeAttack = incomingAttackFromRoute(scan, fleet, starsByUid);
             const target = routeAttack?.target;
@@ -3019,7 +3199,7 @@ function assignWinningAttacks(scan: ScanningData, ownFleets: Fleet[], assignedFl
     const assignments: FleetRouteAssignment[] = [];
     const attackedTargetUids = friendlyAttackTargetUids(scan, ownFleets);
     const enemyTargets = Object.values(scan.stars)
-        .filter((star): star is ScannedStar => isScanned(star) && star.puid > 0 && star.puid !== scan.playerUid)
+        .filter((star): star is ScannedStar => isScanned(star) && star.puid > 0 && isEnemyPlayer(scan, star.puid))
         .filter(isWorthOpportunisticEnemyAttack)
         .sort((a, b) => territoryValue(b) - territoryValue(a) || b.st - a.st || a.uid - b.uid);
     const range = rangeValue(scan.players[String(scan.playerUid)]);
@@ -3064,7 +3244,7 @@ function friendlyAttackTargetUids(scan: ScanningData, ownFleets: Fleet[]) {
         const targetUid = fleet.o[0]?.[1];
         if (targetUid === undefined) continue;
         const target = scan.stars[String(targetUid)];
-        if (target && target.puid > 0 && target.puid !== scan.playerUid) {
+        if (target && target.puid > 0 && isEnemyPlayer(scan, target.puid)) {
             targetUids.add(target.uid);
         }
     }
@@ -3112,7 +3292,7 @@ function potentialThreats(scan: ScanningData, stars: MutableStar[], horizonTicks
 function visibleEnemyOrigins(scan: ScanningData): EnemyOrigin[] {
     return [
         ...Object.values(scan.stars)
-            .filter((star): star is ScannedStar => isScanned(star) && star.puid > 0 && star.puid !== scan.playerUid)
+            .filter((star): star is ScannedStar => isScanned(star) && star.puid > 0 && isEnemyPlayer(scan, star.puid))
             .map((star) => ({
                 puid: star.puid,
                 x: star.x,
@@ -3122,7 +3302,7 @@ function visibleEnemyOrigins(scan: ScanningData): EnemyOrigin[] {
                 n: star.n,
             })),
         ...Object.values(scan.fleets)
-            .filter((fleet) => fleet.puid !== scan.playerUid && fleet.st > 0)
+            .filter((fleet) => isEnemyPlayer(scan, fleet.puid) && fleet.st > 0)
             .map((fleet) => ({
                 puid: fleet.puid,
                 x: fleet.x,
@@ -3402,7 +3582,7 @@ function neighboringEmpires(scan: ScanningData) {
     const maxNeighborDistance = Math.max(range * 3, scan.config.homeStarDistance * 1.5);
 
     return Object.values(scan.players)
-        .filter((player) => player.uid !== scan.playerUid && player.totalStars > 0)
+        .filter((player) => player.uid !== scan.playerUid && activePlayer(scan, player.uid))
         .map((player) => ({
             uid: player.uid,
             alias: player.alias,
@@ -3425,11 +3605,6 @@ function nearestDistanceBetweenEmpires(ours: Star[], theirs: Star[]) {
 
 function nearestDistanceToStars(source: Star, targets: Star[]) {
     return targets.reduce((nearest, target) => Math.min(nearest, starDistance(source, target)), Number.POSITIVE_INFINITY);
-}
-
-function activePlayer(scan: ScanningData, playerUid: number) {
-    const player = scan.players[String(playerUid)];
-    return player !== undefined && player.totalStars > 0;
 }
 
 function diplomacyHistoryWith(myUid: number, theirUid: number, messages: unknown[]) {
@@ -3748,7 +3923,7 @@ function frontierWeight(scan: ScanningData, star: ScannedStar) {
     for (const other of Object.values(scan.stars)) {
         if (other.uid === star.uid || other.puid === scan.playerUid) continue;
         const distance = starDistance(star, other);
-        if (other.puid > 0 && activePlayer(scan, other.puid)) {
+        if (other.puid > 0 && isEnemyPlayer(scan, other.puid)) {
             nearestEnemy = Math.min(nearestEnemy, distance);
         } else if (other.puid <= 0) {
             nearestNeutral = Math.min(nearestNeutral, distance);
@@ -3764,7 +3939,7 @@ function frontierWeight(scan: ScanningData, star: ScannedStar) {
         : 0;
     const incomingPressure = Object.values(scan.fleets).some((fleet) => {
         const targetUid = fleet.o[0]?.[1];
-        return fleet.puid !== scan.playerUid && targetUid === star.uid;
+        return isEnemyPlayer(scan, fleet.puid) && targetUid === star.uid;
     }) ? 1 : 0;
     return 1 + enemyPressure * 2.5 + neutralPressure * 1.25 + incomingPressure * 3;
 }
