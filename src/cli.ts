@@ -532,8 +532,14 @@ function printMarkdown(markdown: string) {
 
 async function postDiscordSummary(markdown: string, config: DiscordWebhookConfig | undefined) {
     if (!config) return;
-    const count = await postMarkdownToDiscord(markdown, config);
+    const count = await postMarkdownToDiscord(discordSummaryMarkdown(markdown, config), config);
     process.stdout.write(`Discord webhook: posted ${count} message${count === 1 ? "" : "s"}.\n`);
+}
+
+function discordSummaryMarkdown(markdown: string, config: DiscordWebhookConfig) {
+    const name = config.username?.trim();
+    if (!name) return markdown;
+    return markdown.replace(/^# AIB Turn Summary/m, `# AIB Turn Summary - ${name}`);
 }
 
 async function postDiscordMaps(mapPaths: string[], config: DiscordWebhookConfig | undefined) {

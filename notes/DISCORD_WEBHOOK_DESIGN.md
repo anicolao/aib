@@ -50,6 +50,11 @@ The `--discord-webhook` flag overrides `AIB_DISCORD_WEBHOOK_URL`. `--no-discord`
 and `AIB_DISCORD_WEBHOOK=0` are useful when re-running a dry run that should not
 notify the channel.
 
+When `AIB_DISCORD_USERNAME` is set, AIB also repeats that name in the Discord
+Markdown title, for example `# AIB Turn Summary - Calculum`. This keeps reports
+distinguishable even when Discord visually groups webhook posts under an earlier
+display name.
+
 ## Message Shape
 
 The CLI reuses the existing Markdown summary generated for terminal output. It
