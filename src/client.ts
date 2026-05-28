@@ -235,7 +235,15 @@ export async function submitDiplomacyDrafts(
                 body: draft.body,
             }, sessionCookie);
             ensureMessageSubmissionSucceeded(response);
-            await verifySingleRecipientMessage(config, sessionCookie, draft);
+            const verification = await verifySingleRecipientMessage(config, sessionCookie, draft, response.report);
+            if (!verification.verified) responses.push({
+                event: "message:verification_warning",
+                report: {
+                    recipientUid: draft.recipientUid,
+                    recipientAlias: draft.recipientAlias,
+                    warning: verification.warning,
+                },
+            });
             responses.push(summarizeGameResponse(response));
         }
     }
@@ -311,32 +319,49 @@ function ensureMessageSubmissionSucceeded(response: { event: string; report: unk
     }
 }
 
-async function verifySingleRecipientMessage(config: AccountConfig, cookie: string, draft: DiplomacyDraft) {
+async function verifySingleRecipientMessage(config: AccountConfig, cookie: string, draft: DiplomacyDraft, createReport: unknown) {
+    const immediateToUids = messageToUids(createReport);
+    if (immediateToUids.length > 0) {
+        verifySingleRecipientList(draft, immediateToUids);
+        return { verified: true };
+    }
+
     const response = await gamePost(config, "fetch_game_messages", {
         group: "game_diplomacy",
         count: "20",
         offset: "0",
     }, cookie);
     if (response.event !== "message:new_messages") {
-        throw new Error(`Could not verify diplomacy message recipients: ${JSON.stringify(response)}`);
+        return { verified: false, warning: `Could not verify diplomacy message recipients: ${JSON.stringify(response)}` };
     }
 
-    const expectedRecipient = draft.recipientUid;
     const sent = messageArray(response.report).find((message) => {
         if (!message || typeof message !== "object") return false;
         const payload = (message as { payload?: Record<string, unknown> }).payload;
         if (!payload) return false;
+        const toUids = numericArray(payload.to_uids);
         return payload.subject === draft.subject
             && payload.body === draft.body
-            && numericArray(payload.to_uids).includes(expectedRecipient);
+            && toUids.includes(draft.recipientUid);
     });
 
     if (!sent || typeof sent !== "object") {
-        throw new Error(`Could not verify diplomacy message to ${draft.recipientAlias} after submission`);
+        return { verified: false, warning: `Could not verify diplomacy message to ${draft.recipientAlias} after submission` };
     }
 
-    const payload = (sent as { payload?: Record<string, unknown> }).payload;
-    const toUids = numericArray(payload?.to_uids);
+    const toUids = messageToUids(sent);
+    verifySingleRecipientList(draft, toUids);
+    return { verified: true };
+}
+
+function messageToUids(message: unknown) {
+    if (!message || typeof message !== "object") return [];
+    const value = message as { payload?: Record<string, unknown>; to_uids?: unknown };
+    return numericArray(value.payload?.to_uids ?? value.to_uids);
+}
+
+function verifySingleRecipientList(draft: DiplomacyDraft, toUids: number[]) {
+    const expectedRecipient = draft.recipientUid;
     if (toUids.length !== 1 || toUids[0] !== expectedRecipient) {
         throw new Error(`Diplomacy message recipient mismatch: expected [${expectedRecipient}], got ${JSON.stringify(toUids)}`);
     }
