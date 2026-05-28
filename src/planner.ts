@@ -425,6 +425,7 @@ const FLEET_ORDER = {
     GARRISON: 7,
 } as const;
 
+const MIN_CARRIER_SHIPS = 1;
 const NEUTRAL_CAPTURE_SHIPS = 5;
 const MIN_OPPORTUNISTIC_ENEMY_TARGET_VALUE = 25;
 const MAX_OFFENSIVE_CARRIER_BUILDS = 1;
@@ -548,7 +549,7 @@ export function planTurn(
         builtCarriersThisTurn += carrierExecution.builtCount;
         executeSupplyShuttles(scan, stars, ownFleets, tacticalFleetUids, tacticalPlan.defenseGraph, config.horizonTicks, commands, rejected);
         executeCoreLogisticsShuttles(scan, stars, ownFleets, tacticalFleetUids, tacticalPlan.defenseGraph, config.horizonTicks, commands, rejected);
-        executeReturnCarriers(scan, stars, ownFleets, tacticalFleetUids, config.horizonTicks, commands, rejected);
+        executeReturnCarriers(scan, stars, ownFleets, tacticalFleetUids, tacticalPlan.defenseGraph, config.horizonTicks, commands, rejected);
         const stagingExecution = executeShipStaging(scan, stars, cash, builtCarriersThisTurn, carrierPlan.budget - carrierExecution.spent, defenseReserveByStarUid, commands, rejected);
         cash = stagingExecution.cash;
         builtCarriersThisTurn += stagingExecution.builtCount;
@@ -1360,6 +1361,7 @@ function assignSupplyShuttles(
     for (const fleet of idleOrbitingFleets(fleets, unavailableFleetUids)) {
         const source = stars.find((star) => star.uid === fleet.ouid);
         if (!source) continue;
+        if (!isInteriorLogisticsSource(source, defenseAnalysis)) continue;
         const sourceSurplus = supplySourceSurplus(source, fleet, defenseGraph, defenseAnalysis);
         if (sourceSurplus <= 0 && fleet.st <= 0) continue;
         const assignment = bestSupplyShuttle(scan, stars, source, fleet, assignedTargets, range, horizonTicks, defenseGraph, defenseAnalysis, hubs, sourceSurplus);
@@ -1531,7 +1533,10 @@ function bestCoreLogisticsCarrierBuild(
             if (!path || path.firstHop.uid === source.uid) return undefined;
             const targetScore = defenseSupplyScore(scan, path.firstHop, defenseGraph, defenseAnalysis, hubs);
             const sinkScore = defenseSupplyScore(scan, sink, defenseGraph, defenseAnalysis, hubs);
+            const sinkHub = defenseGraph.hubs.find((hub) => hub.hubStarUid === sink.uid);
+            const standingShortfall = sinkHub ? hubStandingMassShortfall(sinkHub) : 0;
             const score = (sinkScore - sourceScore) * Math.max(1, Math.log2(ships + 1))
+                + standingShortfall * 10
                 + targetScore * 0.5
                 + sourceSurplus * 0.2
                 - path.totalEta * 1.5
@@ -1609,7 +1614,10 @@ function bestCoreLogisticsShuttle(
             if (!path || path.firstHop.uid === source.uid) return undefined;
             const targetScore = defenseSupplyScore(scan, path.firstHop, defenseGraph, defenseAnalysis, hubs);
             const sinkScore = defenseSupplyScore(scan, sink, defenseGraph, defenseAnalysis, hubs);
+            const sinkHub = defenseGraph.hubs.find((hub) => hub.hubStarUid === sink.uid);
+            const standingShortfall = sinkHub ? hubStandingMassShortfall(sinkHub) : 0;
             const score = (sinkScore - sourceScore) * Math.max(1, Math.log2(departureShips + 1))
+                + standingShortfall * 10
                 + targetScore * 0.5
                 + sourceSurplus * 0.25
                 - path.totalEta * 1.5
@@ -1745,13 +1753,18 @@ function bestSupplyShuttle(
             const departureShips = fleet.st + loadShips;
             const hub = defenseGraph.hubs.find((entry) => entry.hubStarUid === target.uid);
             const reserveNeed = hub ? Math.max(0, hub.reserveShipsRequired - hub.currentReserveShips) : 0;
-            const score = (targetScore - sourceScore) * Math.max(1, departureShips) + reserveNeed * 15 - eta * 0.25;
-            return { fleet, source, target, eta, score, distance, loadShips, departureShips };
+            const standingShortfall = hub ? hubStandingMassShortfall(hub) : 0;
+            const score = (targetScore - sourceScore) * Math.max(1, departureShips)
+                + reserveNeed * 15
+                + standingShortfall * Math.max(1, Math.log2(departureShips + 1)) * 6
+                - eta * 0.25;
+            return { fleet, source, target, eta, score, distance, loadShips, departureShips, reserveNeed, standingShortfall };
         })
         .filter((assignment) => assignment.distance <= range
             && assignment.eta <= horizonTicks
             && assignment.departureShips > 0
             && hubs.has(assignment.target.uid)
+            && (assignment.reserveNeed > 0 || assignment.standingShortfall > 0)
             && assignment.score > 1)
         .sort((a, b) => b.score - a.score || b.fleet.st - a.fleet.st || a.eta - b.eta || a.target.uid - b.target.uid)[0];
 }
@@ -1761,20 +1774,22 @@ function executeReturnCarriers(
     stars: MutableStar[],
     fleets: Fleet[],
     unavailableFleetUids: Set<number>,
+    defenseGraph: DefenseGraphPlan,
     horizonTicks: number,
     commands: PlannedCommand[],
     rejected: string[],
 ) {
-    const assignments = assignReturnCarriers(scan, stars, fleets, unavailableFleetUids, horizonTicks);
+    const assignments = assignReturnCarriers(scan, stars, fleets, unavailableFleetUids, defenseGraph, horizonTicks);
     for (const assignment of assignments) {
         unavailableFleetUids.add(assignment.fleet.uid);
-        const action = assignment.dropShips > 0 ? FLEET_ORDER.DROP_ALL : FLEET_ORDER.NOTHING;
+        const action = assignment.dropShips > 0 ? FLEET_ORDER.DROP_ALL_BUT : FLEET_ORDER.NOTHING;
+        const amount = assignment.dropShips > 0 ? MIN_CARRIER_SHIPS : 0;
         commands.push({
             kind: "fleet_order",
-            order: `add_fleet_orders,${assignment.fleet.uid},0,${assignment.target.uid},${action},0,0`,
+            order: `add_fleet_orders,${assignment.fleet.uid},0,${assignment.target.uid},${action},${amount},0`,
             reason: assignment.dropShips > 0
-                ? `return carrier ${assignment.fleet.uid} from ${assignment.source.n} to resupply at ${assignment.target.n}; drops ${assignment.dropShips} ships before flying back, target has ${assignment.targetAvailableShips} spare ships, eta ${assignment.eta.toFixed(1)} ticks`
-                : `return empty carrier ${assignment.fleet.uid} from ${assignment.source.n} to resupply at ${assignment.target.n}; target has ${assignment.targetAvailableShips} spare ships, eta ${assignment.eta.toFixed(1)} ticks`,
+                ? `return underloaded carrier ${assignment.fleet.uid} from ${assignment.source.n} to resupply at ${assignment.target.n}; drops ${assignment.dropShips} ships on arrival and keeps ${MIN_CARRIER_SHIPS}, target has ${assignment.targetAvailableShips} spare ships, eta ${assignment.eta.toFixed(1)} ticks`
+                : `return minimum-load carrier ${assignment.fleet.uid} from ${assignment.source.n} to resupply at ${assignment.target.n}; target has ${assignment.targetAvailableShips} spare ships, eta ${assignment.eta.toFixed(1)} ticks`,
         });
     }
     if (assignments.length === 0) {
@@ -1787,12 +1802,15 @@ function assignReturnCarriers(
     stars: MutableStar[],
     fleets: Fleet[],
     unavailableFleetUids: Set<number>,
+    defenseGraph: DefenseGraphPlan,
     horizonTicks: number,
 ) {
     const assignments: ReturnCarrierAssignment[] = [];
     const range = rangeValue(scan.players[String(scan.playerUid)]);
     const speed = Math.max(scan.fleetSpeed, 0.0001);
     const starsByUid = new Map(stars.map((star) => [star.uid, star]));
+    const defenseAnalysis = new Map(defenseGraph.starAnalyses.map((analysis) => [analysis.starUid, analysis]));
+    const hubs = new Set(defenseGraph.hubs.map((hub) => hub.hubStarUid));
     const sourceShips = new Map<number, number>(stars.map((star) => [star.uid, Math.max(0, star.st - EXPANSION_SOURCE_GARRISON)]));
 
     const idleFleets = fleets
@@ -1803,10 +1821,13 @@ function assignReturnCarriers(
         if (fleet.st >= NEUTRAL_CAPTURE_SHIPS) continue;
         const source = starsByUid.get(fleet.ouid);
         if (!source) continue;
+        const isMinimumLoadCarrier = fleet.st <= MIN_CARRIER_SHIPS;
+        const isSafeReturnOrigin = isCarrierReturnOrigin(source, defenseAnalysis, hubs);
+        if (!isMinimumLoadCarrier && !isSafeReturnOrigin) continue;
         const localLoadNeeded = Math.max(0, NEUTRAL_CAPTURE_SHIPS - fleet.st);
-        if ((sourceShips.get(source.uid) ?? 0) >= localLoadNeeded) continue;
+        if (isSafeReturnOrigin && (sourceShips.get(source.uid) ?? 0) >= localLoadNeeded) continue;
 
-        const target = bestReturnCarrierTarget(scan, stars, source, fleet, range, speed, horizonTicks, sourceShips);
+        const target = bestReturnCarrierTarget(scan, stars, source, fleet, range, speed, horizonTicks, sourceShips, defenseAnalysis);
         if (!target) continue;
         source.st += fleet.st;
         assignments.push({
@@ -1814,7 +1835,7 @@ function assignReturnCarriers(
             source,
             target: target.star,
             eta: target.eta,
-            dropShips: Math.max(0, fleet.st),
+            dropShips: Math.max(0, fleet.st - MIN_CARRIER_SHIPS),
             targetAvailableShips: target.availableShips,
         });
     }
@@ -1830,11 +1851,13 @@ function bestReturnCarrierTarget(
     speed: number,
     horizonTicks: number,
     sourceShips: Map<number, number>,
+    defenseAnalysis: Map<number, DefenseGraphPlan["starAnalyses"][number]>,
 ) {
     const sourceScore = frontierSupplyScore(scan, source);
     const sourceAvailable = sourceShips.get(source.uid) ?? 0;
     return stars
         .filter((star) => star.uid !== source.uid)
+        .filter((star) => isInteriorLogisticsSource(star, defenseAnalysis))
         .map((star) => {
             const distance = starDistance(source, star);
             const eta = etaTicks(distance, speed);
@@ -1851,6 +1874,27 @@ function bestReturnCarrierTarget(
             || a.eta - b.eta
             || b.star.st - a.star.st
             || a.star.uid - b.star.uid)[0];
+}
+
+function isInteriorLogisticsSource(
+    star: MutableStar,
+    defenseAnalysis: Map<number, DefenseGraphPlan["starAnalyses"][number]>,
+) {
+    const analysis = defenseAnalysis.get(star.uid);
+    return analysis?.classification === "interior" && !analysis.closestThreat;
+}
+
+function isCarrierReturnOrigin(
+    star: MutableStar,
+    defenseAnalysis: Map<number, DefenseGraphPlan["starAnalyses"][number]>,
+    hubs: Set<number>,
+) {
+    const analysis = defenseAnalysis.get(star.uid);
+    if (!analysis) return false;
+    if (analysis.closestThreat || hubs.has(star.uid)) return false;
+    return analysis.classification === "interior"
+        || analysis.classification === "covered"
+        || analysis.classification === "exposed_low_value";
 }
 
 function frontierSupplyScore(scan: ScanningData, star: MutableStar) {
@@ -1902,18 +1946,19 @@ function defenseSupplyScore(
     const analysis = defenseAnalysis.get(star.uid);
     const hub = defenseGraph.hubs.find((entry) => entry.hubStarUid === star.uid);
     const reserveNeed = hub ? Math.max(0, hub.reserveShipsRequired - hub.currentReserveShips) : 0;
+    const standingShortfall = hub ? hubStandingMassShortfall(hub) : 0;
     const incoming = Object.values(scan.fleets).some((fleet) => fleet.puid !== scan.playerUid && fleet.o[0]?.[1] === star.uid)
         ? 30
         : 0;
     const value = territoryValue(star);
 
     if (hubs.has(star.uid)) {
-        return 100 + value + reserveNeed * 8 + incoming;
+        return 100 + value + reserveNeed * 8 + standingShortfall * 2 + incoming;
     }
     if (!analysis) return frontierSupplyScore(scan, star);
     switch (analysis.classification) {
         case "self_hub":
-            return 100 + value + reserveNeed * 8 + incoming;
+            return 100 + value + reserveNeed * 8 + standingShortfall * 2 + incoming;
         case "covered":
             return 35 + value * 0.5 + incoming;
         case "exposed_high_value":
@@ -2361,21 +2406,34 @@ function bestInteriorHubSupplyTarget(
             const analysis = analysisByUid.get(star.uid);
             const plannedInbound = plannedInboundByHubUid.get(star.uid) ?? 0;
             const reserveDeficit = Math.max(0, hub.reserveShipsRequired - hub.currentReserveShips - plannedInbound);
+            const standingShortfall = Math.max(0, hubStandingMassTarget(hub) - hub.currentReserveShips - plannedInbound);
             const activeThreat = analysis?.closestThreat ? 1 : 0;
             const pressure = (analysis?.closestThreat?.attackerShips ?? 0) + Math.max(0, hub.reserveShipsRequired - plannedInbound);
             const score = activeThreat * 1000
                 + reserveDeficit * 80
+                + standingShortfall * 30
                 + pressure * 10
                 + hub.coverageValue * 4
                 - eta * 8;
-            return { star, distance, eta, score };
+            return { star, distance, eta, score, reserveDeficit, standingShortfall };
         })
-        .filter((candidate): candidate is { star: MutableStar; distance: number; eta: number; score: number } => candidate !== undefined)
-        .filter((candidate) => candidate.distance <= range && candidate.eta <= horizonTicks && candidate.score > 0)
+        .filter((candidate): candidate is { star: MutableStar; distance: number; eta: number; score: number; reserveDeficit: number; standingShortfall: number } => candidate !== undefined)
+        .filter((candidate) => candidate.distance <= range
+            && candidate.eta <= horizonTicks
+            && (candidate.reserveDeficit > 0 || candidate.standingShortfall > 0)
+            && candidate.score > 0)
         .sort((a, b) => b.score - a.score
             || a.eta - b.eta
             || b.star.st - a.star.st
             || a.star.uid - b.star.uid)[0];
+}
+
+function hubStandingMassTarget(hub: DefenseGraphPlan["hubs"][number]) {
+    return Math.max(hub.reserveShipsRequired, Math.ceil(hub.coverageValue));
+}
+
+function hubStandingMassShortfall(hub: DefenseGraphPlan["hubs"][number]) {
+    return Math.max(0, hubStandingMassTarget(hub) - hub.currentReserveShips);
 }
 
 function executeInteriorHubSupplyCarrierBuilds(
