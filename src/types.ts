@@ -378,8 +378,8 @@ export interface Player {
      */
     cash: number;
     /**
-     * Map of other player UIDs to diplomatic status (0: formal alliance, 1: alliance requested by us,
-     * 2: alliance offered by them, 3: war).
+     * Map of other player UIDs to diplomatic status (0: formal alliance, 1: alliance offered by them,
+     * 2: alliance requested by us, 3: war).
      */
     war: Record<string, number>;
     /**

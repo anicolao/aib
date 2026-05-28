@@ -139,8 +139,8 @@ but not for every player. `researching` and `researchingNext` are also not
 universal in observed data.
 
 When formal alliances are enabled, the scanning player's `war` map uses `0` for
-an established formal alliance, `1` for an alliance requested by the scanner,
-`2` for an alliance offered by the other player, and `3` for war.
+an established formal alliance, `1` for an alliance offered by the other player,
+`2` for an alliance requested by the scanner, and `3` for war.
 
 `conceded` uses:
 

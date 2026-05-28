@@ -2,8 +2,8 @@ import type { ScanningData } from "./types.js";
 
 export const DIPLOMACY_STATUS = {
     ALLIED: 0,
-    REQUESTED: 1,
-    OFFERED: 2,
+    OFFERED: 1,
+    REQUESTED: 2,
     WAR: 3,
 } as const;
 

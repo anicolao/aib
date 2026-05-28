@@ -3,7 +3,7 @@ import type { PlannedCommand } from "./command.js";
 import { estimateBattle, estimateStarBattle, projectedStarShips, type BattleEstimate } from "./battle.js";
 import { computeDefenseGraph, type DefenseGraphPlan } from "./defense-graph.js";
 import { optimizeDamageTickInfrastructure, type DamageTickSolverPlan } from "./damage-tick-solver.js";
-import { activePlayer, alliancesEnabled, hasAllianceOfferFrom, hasRequestedAlliance, isEnemyPlayer, isFormalAlly } from "./relations.js";
+import { activePlayer, alliancesEnabled, DIPLOMACY_STATUS, hasAllianceOfferFrom, hasRequestedAlliance, isEnemyPlayer, isFormalAlly } from "./relations.js";
 import { intrinsicStarValue } from "./star-value.js";
 
 export interface PlannerConfig {
@@ -403,6 +403,7 @@ interface TechTransferPlan {
 interface AlliancePlan {
     commands: PlannedCommand[];
     diplomacyDrafts: DiplomacyDraft[];
+    acceptedPlayerUids: number[];
 }
 
 interface TechTradeDecision {
@@ -446,32 +447,46 @@ export function planTurn(
     diplomacyMessages: unknown[] = [],
     gameEvents: unknown[] = [],
 ): DecisionRecord {
-    const player = scan.players[String(scan.playerUid)];
-    if (!player) {
+    const initialPlayer = scan.players[String(scan.playerUid)];
+    if (!initialPlayer) {
         throw new Error(`Player ${scan.playerUid} was not present in scan`);
     }
 
-    const commands: PlannedCommand[] = [];
     const rejected: string[] = [];
-    const stars = ownedScannedStars(scan).map((star) => ({
+    const initialOwnFleets = Object.values(scan.fleets).filter((fleet) => fleet.puid === scan.playerUid);
+    const alliancePlan = planFormalAlliances(
+        scan,
+        initialOwnFleets,
+        diplomacyMessages,
+        gameEvents,
+        preliminaryIncomingAttackerUids(scan),
+        rejected,
+    );
+    const planningScan = scanWithAcceptedAlliances(scan, alliancePlan.acceptedPlayerUids);
+    const player = planningScan.players[String(planningScan.playerUid)];
+    if (!player) {
+        throw new Error(`Player ${planningScan.playerUid} was not present in scan`);
+    }
+
+    const commands: PlannedCommand[] = [...alliancePlan.commands];
+    const stars = ownedScannedStars(planningScan).map((star) => ({
         ...star,
-        frontierWeight: frontierWeight(scan, star),
+        frontierWeight: frontierWeight(planningScan, star),
     }));
-    const ownFleets = Object.values(scan.fleets).filter((fleet) => fleet.puid === scan.playerUid);
-    const tacticalPlan = planTactics(scan, stars, ownFleets, config, rejected);
+    const ownFleets = Object.values(planningScan.fleets).filter((fleet) => fleet.puid === planningScan.playerUid);
+    const tacticalPlan = planTactics(planningScan, stars, ownFleets, config, rejected);
     const tacticalFleetUids = new Set(tacticalPlan.assignments.map((assignment) => assignment.fleet.uid));
-    reserveIdleDefenseHubFleets(scan, ownFleets, tacticalPlan.defenseGraph, tacticalFleetUids, rejected);
-    const techTransferPlan = planTechTransfers(scan, diplomacyMessages, gameEvents, tacticalPlan);
-    const alliancePlan = planFormalAlliances(scan, ownFleets, diplomacyMessages, gameEvents, tacticalPlan, rejected);
+    reserveIdleDefenseHubFleets(planningScan, ownFleets, tacticalPlan.defenseGraph, tacticalFleetUids, rejected);
+    const techTransferPlan = planTechTransfers(planningScan, diplomacyMessages, gameEvents, tacticalPlan);
     const defensiveCarrierPlan = config.buildCarrier
-        ? planDefensiveCarrierBuilds(scan, stars, tacticalPlan, safeNumber(player.cash, 0), techTransferPlan.reserveCost, 0, config.horizonTicks, rejected)
+        ? planDefensiveCarrierBuilds(planningScan, stars, tacticalPlan, safeNumber(player.cash, 0), techTransferPlan.reserveCost, 0, config.horizonTicks, rejected)
         : { assignments: [], buildCount: 0, buildCost: 0 };
     const interiorHubSupplyPlan = config.buildCarrier
-        ? planInteriorHubSupplyCarrierBuilds(scan, stars, tacticalPlan.defenseGraph, safeNumber(player.cash, 0), techTransferPlan.reserveCost + defensiveCarrierPlan.buildCost, defensiveCarrierPlan.buildCount, config.horizonTicks, rejected)
+        ? planInteriorHubSupplyCarrierBuilds(planningScan, stars, tacticalPlan.defenseGraph, safeNumber(player.cash, 0), techTransferPlan.reserveCost + defensiveCarrierPlan.buildCost, defensiveCarrierPlan.buildCount, config.horizonTicks, rejected)
         : { assignments: [], buildCount: 0, buildCost: 0, reservedSourceShipsByStarUid: {} };
     const coreLogisticsCarrierPlan = config.buildCarrier
         ? planCoreLogisticsCarrierBuilds(
-            scan,
+            planningScan,
             stars,
             ownFleets,
             tacticalFleetUids,
@@ -490,7 +505,7 @@ export function planTurn(
     );
     const offensiveCarrierPlan = config.buildCarrier
         ? planOffensiveCarrierBuilds(
-            scan,
+            planningScan,
             stars,
             ownFleets,
             safeNumber(player.cash, 0),
@@ -510,10 +525,10 @@ export function planTurn(
         offensiveCarrierPlan.reservedSourceShipsByStarUid,
     );
     const carrierBudget = config.buildCarrier
-        ? logisticsBudget(scan, player, stars, safeNumber(player.cash, 0), mandatoryReserve, config)
+        ? logisticsBudget(planningScan, player, stars, safeNumber(player.cash, 0), mandatoryReserve, config)
         : 0;
     const carrierPlan = config.buildCarrier
-        ? planCarrierCoverage(scan, stars, ownFleets, tacticalFleetUids, carrierBudget, config.horizonTicks, defensiveCarrierPlan.buildCount + interiorHubSupplyPlan.buildCount + coreLogisticsCarrierPlan.buildCount + offensiveCarrierPlan.buildCount, defenseReserveByStarUid, rejected)
+        ? planCarrierCoverage(planningScan, stars, ownFleets, tacticalFleetUids, carrierBudget, config.horizonTicks, defensiveCarrierPlan.buildCount + interiorHubSupplyPlan.buildCount + coreLogisticsCarrierPlan.buildCount + offensiveCarrierPlan.buildCount, defenseReserveByStarUid, rejected)
         : { buildCount: 0, buildCost: 0, budget: 0 };
 
     let cash = safeNumber(player.cash, 0);
@@ -521,12 +536,11 @@ export function planTurn(
         mandatoryReserve,
         defensiveCarrierPlan.buildCost + interiorHubSupplyPlan.buildCost + coreLogisticsCarrierPlan.buildCost + offensiveCarrierPlan.buildCost + carrierPlan.buildCost + techTransferPlan.reserveCost,
     );
-    const infrastructurePlan = buyInfrastructure(scan, player, stars, cash, reserve, config, tacticalPlan.defenseGraph, commands, rejected);
+    const infrastructurePlan = buyInfrastructure(planningScan, player, stars, cash, reserve, config, tacticalPlan.defenseGraph, commands, rejected);
     cash = infrastructurePlan.cash;
 
     commands.push(...techTransferPlan.commands);
     cash -= techTransferPlan.reserveCost;
-    commands.push(...alliancePlan.commands);
 
     if (infrastructurePlan.solver.recommendResearchChange && infrastructurePlan.solver.selectedResearchKind === TECH.WEAPONS) {
         commands.push({
@@ -552,18 +566,18 @@ export function planTurn(
         const offensiveCarrierExecution = executeOffensiveCarrierBuilds(offensiveCarrierPlan, cash, commands, rejected);
         cash = offensiveCarrierExecution.cash;
         builtCarriersThisTurn += offensiveCarrierExecution.builtCount;
-        const carrierExecution = executeCarrierCoverage(scan, stars, ownFleets, tacticalFleetUids, cash, carrierPlan.budget, config.horizonTicks, builtCarriersThisTurn, defenseReserveByStarUid, commands, rejected);
+        const carrierExecution = executeCarrierCoverage(planningScan, stars, ownFleets, tacticalFleetUids, cash, carrierPlan.budget, config.horizonTicks, builtCarriersThisTurn, defenseReserveByStarUid, commands, rejected);
         cash = carrierExecution.cash;
         builtCarriersThisTurn += carrierExecution.builtCount;
-        executeSupplyShuttles(scan, stars, ownFleets, tacticalFleetUids, tacticalPlan.defenseGraph, config.horizonTicks, commands, rejected);
-        executeCoreLogisticsShuttles(scan, stars, ownFleets, tacticalFleetUids, tacticalPlan.defenseGraph, config.horizonTicks, commands, rejected);
-        executeReturnCarriers(scan, stars, ownFleets, tacticalFleetUids, tacticalPlan.defenseGraph, config.horizonTicks, commands, rejected);
-        const stagingExecution = executeShipStaging(scan, stars, cash, builtCarriersThisTurn, carrierPlan.budget - carrierExecution.spent, defenseReserveByStarUid, commands, rejected);
+        executeSupplyShuttles(planningScan, stars, ownFleets, tacticalFleetUids, tacticalPlan.defenseGraph, config.horizonTicks, commands, rejected);
+        executeCoreLogisticsShuttles(planningScan, stars, ownFleets, tacticalFleetUids, tacticalPlan.defenseGraph, config.horizonTicks, commands, rejected);
+        executeReturnCarriers(planningScan, stars, ownFleets, tacticalFleetUids, tacticalPlan.defenseGraph, config.horizonTicks, commands, rejected);
+        const stagingExecution = executeShipStaging(planningScan, stars, cash, builtCarriersThisTurn, carrierPlan.budget - carrierExecution.spent, defenseReserveByStarUid, commands, rejected);
         cash = stagingExecution.cash;
         builtCarriersThisTurn += stagingExecution.builtCount;
     }
 
-    if (config.markReady && scan.turnBased === 1 && player.ready !== 1) {
+    if (config.markReady && planningScan.turnBased === 1 && player.ready !== 1) {
         commands.push({
             kind: "ready",
             order: "force_ready",
@@ -578,18 +592,18 @@ export function planTurn(
     const diplomacyDrafts = [
         ...techTransferPlan.diplomacyDrafts,
         ...alliancePlan.diplomacyDrafts,
-        ...draftDiplomacy(scan, diplomacyMessages, techDraftRecipients, infrastructurePlan.solver.selectedResearchKind),
+        ...draftDiplomacy(planningScan, diplomacyMessages, techDraftRecipients, infrastructurePlan.solver.selectedResearchKind),
     ];
 
     return {
         metadata: {
-            gameName: scan.name,
-            playerUid: scan.playerUid,
-            tick: scan.tick,
-            tickFragment: scan.tickFragment,
-            productionCounter: scan.productionCounter,
-            productionRate: scan.productionRate,
-            turnBased: scan.turnBased,
+            gameName: planningScan.name,
+            playerUid: planningScan.playerUid,
+            tick: planningScan.tick,
+            tickFragment: planningScan.tickFragment,
+            productionCounter: planningScan.productionCounter,
+            productionRate: planningScan.productionRate,
+            turnBased: planningScan.turnBased,
             dryRun,
         },
         summary: {
@@ -936,17 +950,17 @@ function planFormalAlliances(
     ownFleets: Fleet[],
     diplomacyMessages: unknown[],
     gameEvents: unknown[],
-    tacticalPlan: TacticalPlan,
+    incomingAttackerUids: Set<number>,
     rejected: string[],
 ): AlliancePlan {
-    if (!alliancesEnabled(scan)) return { commands: [], diplomacyDrafts: [] };
+    if (!alliancesEnabled(scan)) return { commands: [], diplomacyDrafts: [], acceptedPlayerUids: [] };
 
     const player = scan.players[String(scan.playerUid)];
-    if (!player) return { commands: [], diplomacyDrafts: [] };
+    if (!player) return { commands: [], diplomacyDrafts: [], acceptedPlayerUids: [] };
 
     const commands: PlannedCommand[] = [];
     const diplomacyDrafts: DiplomacyDraft[] = [];
-    const incomingAttackerUids = new Set(tacticalPlan.incomingAttacks.map((attack) => attack.attacker.uid));
+    const acceptedPlayerUids: number[] = [];
     const collisions = unavoidableExplorationCollisions(scan, ownFleets);
     const collisionsByPlayer = new Map<number, ReturnType<typeof unavoidableExplorationCollisions>>();
     for (const collision of collisions) {
@@ -968,6 +982,7 @@ function planFormalAlliances(
                     order: `accept_peace,${other.uid}`,
                     reason: `accept formal alliance offered by ${other.alias}; ${assessment.reason}`,
                 });
+                acceptedPlayerUids.push(other.uid);
             } else {
                 rejected.push(`declined formal alliance offer from ${other.alias}: ${assessment.reason}`);
             }
@@ -1014,7 +1029,34 @@ function planFormalAlliances(
         diplomacyDrafts.push(draft);
     }
 
-    return { commands, diplomacyDrafts };
+    return { commands, diplomacyDrafts, acceptedPlayerUids };
+}
+
+function preliminaryIncomingAttackerUids(scan: ScanningData) {
+    const stars = ownedScannedStars(scan).map((star) => ({ ...star, frontierWeight: 1 }));
+    return new Set(visibleIncomingAttacks(scan, stars).map((attack) => attack.attacker.uid));
+}
+
+function scanWithAcceptedAlliances(scan: ScanningData, acceptedPlayerUids: number[]) {
+    if (acceptedPlayerUids.length === 0) return scan;
+    const player = scan.players[String(scan.playerUid)];
+    if (!player) return scan;
+
+    const war = { ...player.war };
+    for (const uid of acceptedPlayerUids) {
+        war[String(uid)] = DIPLOMACY_STATUS.ALLIED;
+    }
+
+    return {
+        ...scan,
+        players: {
+            ...scan.players,
+            [String(scan.playerUid)]: {
+                ...player,
+                war,
+            },
+        },
+    };
 }
 
 function unavoidableExplorationCollisions(scan: ScanningData, ownFleets: Fleet[]) {
