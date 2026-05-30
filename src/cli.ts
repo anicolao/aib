@@ -94,7 +94,7 @@ async function main() {
                 skipped: result.skipped ?? "Skipped.",
             }]);
             printMarkdown(markdown);
-            await postDiscordSummary(markdown, discord);
+            await postDiscordOutputs(markdown, [], discord);
             return;
         }
         const summaries = [{
@@ -105,9 +105,8 @@ async function main() {
         }];
         const markdown = renderTurnSummaries(summaries);
         printMarkdown(markdown);
-        await postDiscordSummary(markdown, discord);
         const mapPaths = await outputDebugMaps(summaries, args);
-        await postDiscordMaps(mapPaths, discord);
+        await postDiscordOutputs(markdown, mapPaths, discord);
     }
 }
 
@@ -227,9 +226,8 @@ async function runDiscoveredTurns(account: AccountConfig, args: CliArgs, baseUrl
     } else {
         const markdown = renderTurnSummaries(results);
         printMarkdown(markdown);
-        await postDiscordSummary(markdown, discord);
         const mapPaths = await outputDebugMaps(results, args);
-        await postDiscordMaps(mapPaths, discord);
+        await postDiscordOutputs(markdown, mapPaths, discord);
     }
 }
 
@@ -533,6 +531,7 @@ function printMarkdown(markdown: string) {
 
 async function postDiscordSummary(markdown: string, config: DiscordWebhookConfig | undefined) {
     if (!config) return;
+    process.stdout.write("Discord webhook: posting summary...\n");
     const count = await postMarkdownToDiscord(discordSummaryMarkdown(markdown, config), config);
     process.stdout.write(`Discord webhook: posted ${count} message${count === 1 ? "" : "s"}.\n`);
 }
@@ -545,10 +544,19 @@ function discordSummaryMarkdown(markdown: string, config: DiscordWebhookConfig) 
 
 async function postDiscordMaps(mapPaths: string[], config: DiscordWebhookConfig | undefined) {
     if (!config || mapPaths.length === 0) return;
-    for (const path of mapPaths) {
+    process.stdout.write(`Discord webhook: posting ${mapPaths.length} debug map${mapPaths.length === 1 ? "" : "s"}...\n`);
+    for (const [index, path] of mapPaths.entries()) {
+        process.stdout.write(`Discord webhook: posting debug map ${index + 1}/${mapPaths.length}: ${path}\n`);
         await postPngToDiscord(path, `Debug map: ${path}`, config);
     }
     process.stdout.write(`Discord webhook: posted ${mapPaths.length} debug map${mapPaths.length === 1 ? "" : "s"}.\n`);
+}
+
+async function postDiscordOutputs(markdown: string, mapPaths: string[], config: DiscordWebhookConfig | undefined) {
+    if (!config) return;
+    process.stdout.write("Discord webhook: starting uploads after local output.\n");
+    await postDiscordSummary(markdown, config);
+    await postDiscordMaps(mapPaths, config);
 }
 
 async function outputDebugMaps(results: TurnSummaryInput[], args: CliArgs) {
