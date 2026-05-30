@@ -260,7 +260,11 @@ Do not respond just to thanks, appreciation, vague goodwill, repeated generic tr
 
 If responding, write a concise plain draft that answers the latest inbound message specifically. It may agree, disagree, propose an alternative, or ask one clarifying question. Do not invent promises, alliances, threats, tech transfers, or military actions not supported by the context. Do not claim, request, or imply that in-flight carriers can be recalled, redirected, diverted, turned around, or stopped; once launched, carriers cannot be redirected. When discussing attacks, ask instead for no reinforcements, no follow-up attacks, compensation, or border talks. Use Neptune's Pride links with [[ ]] around player and star names. Address only [[${candidate.recipientAlias}]].
 
+Use the tech levels below when evaluating trade proposals. Current planned research is not the only technology we can trade; if the latest inbound asks for a specific technology we already have or are ahead in, answer that proposal directly instead of defaulting to our current research.
+
 Our current planned research: ${candidate.plannedResearchName}
+Our known tech levels: ${candidate.ourTechSummary}
+Their known tech levels: ${candidate.theirTechSummary}
 
 Thread context, oldest to newest:
 ${candidate.context}

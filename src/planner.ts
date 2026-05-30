@@ -71,6 +71,8 @@ export interface DiplomacyJudgementCandidate {
     threadKey?: string;
     plannedResearchKind: number;
     plannedResearchName: string;
+    ourTechSummary: string;
+    theirTechSummary: string;
 }
 
 interface MutableStar extends ScannedStar {
@@ -3577,6 +3579,8 @@ export function collectDiplomacyJudgementCandidates(
                 latestInboundBody: latestInbound.body,
                 plannedResearchKind: researchKind,
                 plannedResearchName: techName(researchKind),
+                ourTechSummary: playerTechSummary(player),
+                theirTechSummary: playerTechSummary(candidate),
             };
             if (latestInbound.threadKey) judgement.threadKey = latestInbound.threadKey;
             return [judgement];
@@ -3689,7 +3693,7 @@ function nearestDistanceToStars(source: Star, targets: Star[]) {
 
 function diplomacyHistoryWith(myUid: number, theirUid: number, messages: unknown[]) {
     return messages
-        .flatMap((message) => messageEvents(message, myUid, theirUid))
+        .flatMap((message) => messageEvents(message))
         .filter((event) => event.fromUid === myUid || event.fromUid === theirUid)
         .filter((event) => event.toUids.includes(myUid) || event.toUids.includes(theirUid))
         .filter((event) => event.fromUid !== myUid || event.toUids.includes(theirUid))
@@ -3697,13 +3701,17 @@ function diplomacyHistoryWith(myUid: number, theirUid: number, messages: unknown
         .sort((a, b) => a.created - b.created);
 }
 
-function messageEvents(message: unknown, myUid: number, theirUid: number) {
+function messageEvents(message: unknown) {
     const root = message as DiplomacyMessage;
     const threadKey = messageKey(message);
-    const events = [messageEvent(root)]
+    const rootEvent = messageEvent(root);
+    const threadParticipants = rootEvent
+        ? new Set([rootEvent.fromUid, ...rootEvent.toUids])
+        : new Set<number>();
+    const events = [rootEvent]
         .filter((event): event is ReturnType<typeof messageEvent> & { created: number; fromUid: number; toUids: number[] } => Boolean(event));
     for (const comment of root.comments ?? []) {
-        const event = commentEvent(comment, myUid, theirUid);
+        const event = commentEvent(comment, threadParticipants);
         if (event) events.push(event);
     }
     return events.map((event) => {
@@ -3721,15 +3729,11 @@ function messageEvent(message: DiplomacyMessage) {
     return diplomacyEvent(created, fromUid, toUids, stringValue(message.payload?.body));
 }
 
-function commentEvent(comment: DiplomacyComment, myUid: number, theirUid: number) {
+function commentEvent(comment: DiplomacyComment, threadParticipants: Set<number>) {
     const created = timestampMs(comment.payload?.created ?? comment.created);
     const fromUid = numeric(comment.payload?.senderUid ?? comment.payload?.from_uid ?? comment.player_uid);
     if (created === undefined || fromUid === undefined) return undefined;
-    const toUids = fromUid === myUid
-        ? [theirUid]
-        : fromUid === theirUid
-            ? [myUid]
-            : [];
+    const toUids = [...threadParticipants].filter((uid) => uid !== fromUid);
     return diplomacyEvent(created, fromUid, toUids, stringValue(comment.payload?.body));
 }
 
@@ -3762,6 +3766,7 @@ function techDiplomacyReply(
     latestInboundBody?: string,
 ) {
     if (!latestInboundBody) return undefined;
+    if (requiresJudgedTechReply(latestInboundBody)) return undefined;
 
     const previousOutbound = latestMessageFrom(myUid, history);
     const inboundTechs = explicitTechKinds(latestInboundBody);
@@ -3796,6 +3801,10 @@ function techDiplomacyReply(
     return undefined;
 }
 
+function requiresJudgedTechReply(text: string) {
+    return /\b(if\s+you\s+send|you\s+(?:send|share|give)\s+me|send\s+me|please\s+send|i\s+(?:will|can|would)\s+send\s+(?:you|back)|i\s+sent\s+you|in\s+return|would\s+welcome|reciprocat)/i.test(text);
+}
+
 function diplomacyBody(myAlias: string, theirAlias: string, research: string) {
     const opener = `Hi ${npLink(theirAlias)}, it looks like we are going to be neighbors.`;
     return [
@@ -3822,6 +3831,18 @@ function techName(kind: number) {
         [TECH.TERRAFORMING]: "Terraforming",
     };
     return names[kind] ?? `technology ${kind}`;
+}
+
+function playerTechSummary(player: Player) {
+    return [
+        TECH.BANKING,
+        TECH.RESEARCH,
+        TECH.MANUFACTURING,
+        TECH.PROPULSION,
+        TECH.SCANNING,
+        TECH.WEAPONS,
+        TECH.TERRAFORMING,
+    ].map((kind) => `${techName(kind)} ${techLevel(player, kind)}`).join(", ");
 }
 
 function techKindValue(value: unknown) {
