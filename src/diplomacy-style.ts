@@ -101,7 +101,11 @@ async function addJudgedDiplomacyDrafts(
 ): Promise<DecisionRecord> {
     const assessments = await Promise.all(candidates.map((candidate) => assessInboundDiplomacy(candidate, config)));
     const addedDrafts: DiplomacyDraft[] = [];
+    const addedCommands = [];
     const rejected = [...decision.rejected];
+    const existingOrders = new Set(decision.commands.map((command) => command.order));
+    let cashRemaining = decision.summary.cashRemaining;
+    let techTransfersPlanned = decision.summary.techTransfersPlanned;
     for (let index = 0; index < candidates.length; index += 1) {
         const candidate = candidates[index];
         const assessment = assessments[index];
@@ -112,6 +116,12 @@ async function addJudgedDiplomacyDrafts(
         }
         if (!assessment.shouldRespond) {
             rejected.push(`LLM diplomacy judgement skipped ${candidate.recipientAlias}: ${assessment.reason}`);
+            continue;
+        }
+        const actionResult = executableCommandsFor(candidate, assessment.actionIds, cashRemaining, existingOrders);
+        for (const warning of actionResult.warnings) rejected.push(warning);
+        if (requiresExecutableAction(assessment.body) && actionResult.commands.length === 0 && actionResult.satisfiedActionCount === 0) {
+            rejected.push(`LLM diplomacy judgement skipped ${candidate.recipientAlias}: response promised an action but selected no executable action`);
             continue;
         }
         const draft: DiplomacyDraft = {
@@ -127,8 +137,14 @@ async function addJudgedDiplomacyDrafts(
         };
         if (candidate.threadKey) draft.threadKey = candidate.threadKey;
         addedDrafts.push(draft);
+        for (const command of actionResult.commands) {
+            addedCommands.push(command);
+            existingOrders.add(command.order);
+            if (command.kind === "tech_transfer") techTransfersPlanned += 1;
+        }
+        cashRemaining -= actionResult.cashCost;
     }
-    if (addedDrafts.length === 0 && rejected.length === decision.rejected.length) {
+    if (addedDrafts.length === 0 && addedCommands.length === 0 && rejected.length === decision.rejected.length) {
         return decision;
     }
     return {
@@ -136,10 +152,51 @@ async function addJudgedDiplomacyDrafts(
         summary: {
             ...decision.summary,
             diplomacyDraftsPlanned: decision.summary.diplomacyDraftsPlanned + addedDrafts.length,
+            commandsPlanned: decision.summary.commandsPlanned + addedCommands.length,
+            cashRemaining,
+            techTransfersPlanned,
         },
+        commands: [...decision.commands, ...addedCommands],
         diplomacyDrafts: [...decision.diplomacyDrafts, ...addedDrafts],
         rejected,
     };
+}
+
+function executableCommandsFor(
+    candidate: DiplomacyJudgementCandidate,
+    actionIds: string[],
+    cashRemaining: number,
+    existingOrders: Set<string>,
+) {
+    const commands = [];
+    const warnings: string[] = [];
+    let cashCost = 0;
+    let satisfiedActionCount = 0;
+    const actionsById = new Map(candidate.executableActions.map((action) => [action.id, action]));
+    for (const actionId of actionIds) {
+        const action = actionsById.get(actionId);
+        if (!action) {
+            warnings.push(`LLM diplomacy action ignored for ${candidate.recipientAlias}: ${actionId} is not executable`);
+            continue;
+        }
+        if (existingOrders.has(action.command.order)) {
+            satisfiedActionCount += 1;
+            continue;
+        }
+        if (cashCost + action.cashCost > cashRemaining) {
+            warnings.push(`LLM diplomacy action ignored for ${candidate.recipientAlias}: ${action.description} costs $${action.cashCost}, only $${Math.max(0, cashRemaining - cashCost)} remains`);
+            continue;
+        }
+        commands.push(action.command);
+        cashCost += action.cashCost;
+        satisfiedActionCount += 1;
+    }
+    return { commands, warnings, cashCost, satisfiedActionCount };
+}
+
+function requiresExecutableAction(body: string) {
+    return /\b(?:I\s+(?:will|can|have|accepted|sent|send|transfer|dispatch)|I(?:'ll|’ll)|will\s+(?:send|transfer|dispatch)|have\s+(?:sent|accepted)|accepted\s+(?:your|the)|transfer\s+of\s+these\s+funds)\b/i.test(body)
+        && /\b(?:send|sent|transfer|dispatch|share|cash|credits?|technology|tech|formal alliance|alliance|accepted)\b/i.test(body);
 }
 
 async function assessInboundDiplomacy(candidate: DiplomacyJudgementCandidate, config: GeminiConfig): Promise<JudgementResult | { error: string }> {
@@ -262,9 +319,15 @@ If responding, write a concise plain draft that answers the latest inbound messa
 
 Use the tech levels below when evaluating trade proposals. Current planned research is not the only technology we can trade; if the latest inbound asks for a specific technology we already have or are ahead in, answer that proposal directly instead of defaulting to our current research.
 
+You may only promise game actions that are listed under "Executable actions". If your response says we will send cash, send technology, accept/request a formal alliance, or perform any other concrete game action, include the matching action id in the actions array. If no matching action is listed, do not promise that action; say we will consider it or ask a clarifying question instead. Fleet movement promises are only allowed if a fleet action is explicitly listed.
+
 Our current planned research: ${candidate.plannedResearchName}
 Our known tech levels: ${candidate.ourTechSummary}
 Their known tech levels: ${candidate.theirTechSummary}
+Cash remaining after current plan: $${candidate.availableCash}
+
+Executable actions:
+${candidate.executableActions.length > 0 ? candidate.executableActions.map((action) => `- ${action.id}: ${action.description}`).join("\n") : "- none"}
 
 Thread context, oldest to newest:
 ${candidate.context}
@@ -277,20 +340,24 @@ Return strict JSON only with this shape:
   "shouldRespond": true,
   "reason": "short reason",
   "subject": "unused; set to an empty string",
-  "body": "message body if shouldRespond is true, otherwise empty string"
+  "body": "message body if shouldRespond is true, otherwise empty string",
+  "actions": ["action_id_to_execute"]
 }`;
 }
 
 function parseJudgement(output: string): JudgementResult {
-    const parsed = JSON.parse(stripJsonFence(output)) as Partial<JudgementResult>;
+    const parsed = JSON.parse(stripJsonFence(output)) as Partial<JudgementResult> & { actions?: unknown };
     const shouldRespond = parsed.shouldRespond === true;
     const reason = cleanOneLine(typeof parsed.reason === "string" ? parsed.reason : "no reason provided", 180);
     const subject = cleanOneLine(typeof parsed.subject === "string" && parsed.subject.trim() ? parsed.subject : "Re: tech cooperation", 80);
     const body = typeof parsed.body === "string" ? cleanBody(parsed.body) : "";
+    const actionIds = Array.isArray(parsed.actions)
+        ? parsed.actions.filter((action: unknown): action is string => typeof action === "string").map((action: string) => cleanOneLine(action, 80))
+        : [];
     if (shouldRespond && !body) {
         throw new Error("Gemini judgement requested a response without a body");
     }
-    return { shouldRespond, reason, subject, body };
+    return { shouldRespond, reason, subject, body, actionIds };
 }
 
 function stripJsonFence(value: string) {
@@ -323,4 +390,5 @@ interface JudgementResult {
     reason: string;
     subject: string;
     body: string;
+    actionIds: string[];
 }

@@ -73,6 +73,15 @@ export interface DiplomacyJudgementCandidate {
     plannedResearchName: string;
     ourTechSummary: string;
     theirTechSummary: string;
+    availableCash: number;
+    executableActions: DiplomacyExecutableAction[];
+}
+
+export interface DiplomacyExecutableAction {
+    id: string;
+    description: string;
+    command: PlannedCommand;
+    cashCost: number;
 }
 
 interface MutableStar extends ScannedStar {
@@ -402,6 +411,11 @@ interface TechTransferPlan {
     reserveCost: number;
 }
 
+interface CashTransferPlan {
+    commands: PlannedCommand[];
+    reserveCost: number;
+}
+
 interface AlliancePlan {
     commands: PlannedCommand[];
     diplomacyDrafts: DiplomacyDraft[];
@@ -480,11 +494,12 @@ export function planTurn(
     const tacticalFleetUids = new Set(tacticalPlan.assignments.map((assignment) => assignment.fleet.uid));
     reserveIdleDefenseHubFleets(planningScan, ownFleets, tacticalPlan.defenseGraph, tacticalFleetUids, rejected);
     const techTransferPlan = planTechTransfers(planningScan, diplomacyMessages, gameEvents, tacticalPlan);
+    const cashTransferPlan = planCashTransfers(planningScan, gameEvents, tacticalPlan, techTransferPlan.reserveCost, rejected);
     const defensiveCarrierPlan = config.buildCarrier
-        ? planDefensiveCarrierBuilds(planningScan, stars, tacticalPlan, safeNumber(player.cash, 0), techTransferPlan.reserveCost, 0, config.horizonTicks, rejected)
+        ? planDefensiveCarrierBuilds(planningScan, stars, tacticalPlan, safeNumber(player.cash, 0), techTransferPlan.reserveCost + cashTransferPlan.reserveCost, 0, config.horizonTicks, rejected)
         : { assignments: [], buildCount: 0, buildCost: 0 };
     const interiorHubSupplyPlan = config.buildCarrier
-        ? planInteriorHubSupplyCarrierBuilds(planningScan, stars, tacticalPlan.defenseGraph, safeNumber(player.cash, 0), techTransferPlan.reserveCost + defensiveCarrierPlan.buildCost, defensiveCarrierPlan.buildCount, config.horizonTicks, rejected)
+        ? planInteriorHubSupplyCarrierBuilds(planningScan, stars, tacticalPlan.defenseGraph, safeNumber(player.cash, 0), techTransferPlan.reserveCost + cashTransferPlan.reserveCost + defensiveCarrierPlan.buildCost, defensiveCarrierPlan.buildCount, config.horizonTicks, rejected)
         : { assignments: [], buildCount: 0, buildCost: 0, reservedSourceShipsByStarUid: {} };
     const coreLogisticsCarrierPlan = config.buildCarrier
         ? planCoreLogisticsCarrierBuilds(
@@ -494,7 +509,7 @@ export function planTurn(
             tacticalFleetUids,
             tacticalPlan.defenseGraph,
             safeNumber(player.cash, 0),
-            techTransferPlan.reserveCost + defensiveCarrierPlan.buildCost + interiorHubSupplyPlan.buildCost,
+            techTransferPlan.reserveCost + cashTransferPlan.reserveCost + defensiveCarrierPlan.buildCost + interiorHubSupplyPlan.buildCost,
             defensiveCarrierPlan.buildCount + interiorHubSupplyPlan.buildCount,
             interiorHubSupplyPlan.reservedSourceShipsByStarUid,
             config.horizonTicks,
@@ -511,7 +526,7 @@ export function planTurn(
             stars,
             ownFleets,
             safeNumber(player.cash, 0),
-            techTransferPlan.reserveCost + defensiveCarrierPlan.buildCost + interiorHubSupplyPlan.buildCost + coreLogisticsCarrierPlan.buildCost,
+            techTransferPlan.reserveCost + cashTransferPlan.reserveCost + defensiveCarrierPlan.buildCost + interiorHubSupplyPlan.buildCost + coreLogisticsCarrierPlan.buildCost,
             defensiveCarrierPlan.buildCount + interiorHubSupplyPlan.buildCount + coreLogisticsCarrierPlan.buildCount,
             preliminaryReserveByStarUid,
             config.horizonTicks,
@@ -520,7 +535,7 @@ export function planTurn(
         : { assignments: [], buildCount: 0, buildCost: 0, reservedSourceShipsByStarUid: {} };
     const mandatoryReserve = Math.max(
         Math.floor(safeNumber(player.cash, 0) * config.cashReserveRatio),
-        techTransferPlan.reserveCost + defensiveCarrierPlan.buildCost + interiorHubSupplyPlan.buildCost + coreLogisticsCarrierPlan.buildCost + offensiveCarrierPlan.buildCost,
+        techTransferPlan.reserveCost + cashTransferPlan.reserveCost + defensiveCarrierPlan.buildCost + interiorHubSupplyPlan.buildCost + coreLogisticsCarrierPlan.buildCost + offensiveCarrierPlan.buildCost,
     );
     const defenseReserveByStarUid = addReserveByStarUid(
         preliminaryReserveByStarUid,
@@ -536,13 +551,15 @@ export function planTurn(
     let cash = safeNumber(player.cash, 0);
     const reserve = Math.max(
         mandatoryReserve,
-        defensiveCarrierPlan.buildCost + interiorHubSupplyPlan.buildCost + coreLogisticsCarrierPlan.buildCost + offensiveCarrierPlan.buildCost + carrierPlan.buildCost + techTransferPlan.reserveCost,
+        defensiveCarrierPlan.buildCost + interiorHubSupplyPlan.buildCost + coreLogisticsCarrierPlan.buildCost + offensiveCarrierPlan.buildCost + carrierPlan.buildCost + techTransferPlan.reserveCost + cashTransferPlan.reserveCost,
     );
     const infrastructurePlan = buyInfrastructure(planningScan, player, stars, cash, reserve, config, tacticalPlan.defenseGraph, commands, rejected);
     cash = infrastructurePlan.cash;
 
     commands.push(...techTransferPlan.commands);
     cash -= techTransferPlan.reserveCost;
+    commands.push(...cashTransferPlan.commands);
+    cash -= cashTransferPlan.reserveCost;
 
     if (infrastructurePlan.solver.recommendResearchChange && infrastructurePlan.solver.selectedResearchKind === TECH.WEAPONS) {
         commands.push({
@@ -945,6 +962,49 @@ function planTechTransfers(
     }
 
     return { commands, diplomacyDrafts, reserveCost };
+}
+
+function planCashTransfers(
+    scan: ScanningData,
+    gameEvents: unknown[],
+    tacticalPlan: TacticalPlan,
+    reservedCash: number,
+    rejected: string[],
+): CashTransferPlan {
+    const player = scan.players[String(scan.playerUid)];
+    if (!player) return { commands: [], reserveCost: 0 };
+
+    const commands: PlannedCommand[] = [];
+    const incomingAttackerUids = new Set(tacticalPlan.incomingAttacks.map((attack) => attack.attacker.uid));
+    let reserveCost = 0;
+    for (const [uidText, ledgerValue] of Object.entries(player.ledger ?? {})
+        .map(([uid, value]) => [uid, safeNumber(value, 0)] as const)
+        .filter(([, value]) => value < 0)
+        .sort((a, b) => a[1] - b[1])) {
+        const recipientUid = Number(uidText);
+        const recipient = scan.players[uidText];
+        if (!recipient || !activePlayer(scan, recipientUid)) continue;
+        const debt = Math.floor(-ledgerValue);
+        if (debt <= 0) continue;
+        const aggr = aggressionStatus(scan, recipientUid, gameEvents, incomingAttackerUids);
+        if (aggr.incoming || aggr.recent) {
+            rejected.push(`skipped cash transfer to ${recipient.alias}: current or recent aggression blocks paying ledger debt $${debt}`);
+            continue;
+        }
+        const available = safeNumber(player.cash, 0) - reservedCash - reserveCost;
+        if (available < debt) {
+            rejected.push(`skipped cash transfer to ${recipient.alias}: ledger debt $${debt} exceeds available cash $${Math.max(0, available)}`);
+            continue;
+        }
+        commands.push({
+            kind: "cash_transfer",
+            order: `send_money,${recipient.uid},${debt}`,
+            reason: `pay outstanding ledger debt of $${debt} to ${recipient.alias}`,
+        });
+        reserveCost += debt;
+    }
+
+    return { commands, reserveCost };
 }
 
 function planFormalAlliances(
@@ -3551,6 +3611,7 @@ export function collectDiplomacyJudgementCandidates(
     messages: unknown[],
     existingDrafts: DiplomacyDraft[] = [],
     plannedResearchKind?: number,
+    availableCash = 0,
 ): DiplomacyJudgementCandidate[] {
     const player = scan.players[String(scan.playerUid)];
     if (!player) return [];
@@ -3581,6 +3642,8 @@ export function collectDiplomacyJudgementCandidates(
                 plannedResearchName: techName(researchKind),
                 ourTechSummary: playerTechSummary(player),
                 theirTechSummary: playerTechSummary(candidate),
+                availableCash,
+                executableActions: diplomacyExecutableActions(scan, player, candidate, latestInbound.body, availableCash),
             };
             if (latestInbound.threadKey) judgement.threadKey = latestInbound.threadKey;
             return [judgement];
@@ -3640,6 +3703,100 @@ function draftAttackObjections(scan: ScanningData, messages: unknown[]): Diploma
         if (threadKey) draft.threadKey = threadKey;
         return [draft];
     });
+}
+
+function diplomacyExecutableActions(
+    scan: ScanningData,
+    player: Player,
+    recipient: Player,
+    latestInboundBody: string,
+    availableCash: number,
+): DiplomacyExecutableAction[] {
+    const actions: DiplomacyExecutableAction[] = [];
+    const spendable = Math.max(0, Math.floor(availableCash));
+    for (const amount of cashActionAmounts(player, recipient, latestInboundBody, spendable)) {
+        actions.push({
+            id: `send_cash_${amount}`,
+            description: `send $${amount} cash to ${recipient.alias}`,
+            command: {
+                kind: "cash_transfer",
+                order: `send_money,${recipient.uid},${amount}`,
+                reason: `LLM diplomacy action: send $${amount} cash to ${recipient.alias}`,
+            },
+            cashCost: amount,
+        });
+    }
+
+    for (const kind of allTechKinds()) {
+        const theirLevel = techLevel(recipient, kind);
+        const levelToSend = theirLevel + 1;
+        const cost = techTradeCost(scan, levelToSend);
+        if (techLevel(player, kind) < levelToSend || cost > spendable) continue;
+        actions.push({
+            id: `share_tech_${kind}`,
+            description: `send ${techName(kind)} ${levelToSend} to ${recipient.alias} for $${cost}`,
+            command: {
+                kind: "tech_transfer",
+                order: `share_tech,${recipient.uid},${kind}`,
+                reason: `LLM diplomacy action: send ${techName(kind)} ${levelToSend} to ${recipient.alias}`,
+            },
+            cashCost: cost,
+        });
+    }
+
+    if (alliancesEnabled(scan)) {
+        if (hasAllianceOfferFrom(scan, recipient.uid)) {
+            actions.push({
+                id: "accept_formal_alliance",
+                description: `accept ${recipient.alias}'s formal alliance offer`,
+                command: {
+                    kind: "alliance",
+                    order: `accept_peace,${recipient.uid}`,
+                    reason: `LLM diplomacy action: accept formal alliance offered by ${recipient.alias}`,
+                },
+                cashCost: 0,
+            });
+        } else if (!isFormalAlly(scan, recipient.uid) && !hasRequestedAlliance(scan, recipient.uid)) {
+            actions.push({
+                id: "request_formal_alliance",
+                description: `request a formal alliance with ${recipient.alias}`,
+                command: {
+                    kind: "alliance",
+                    order: `request_peace,${recipient.uid}`,
+                    reason: `LLM diplomacy action: request formal alliance with ${recipient.alias}`,
+                },
+                cashCost: 0,
+            });
+        }
+    }
+
+    return actions;
+}
+
+function cashActionAmounts(player: Player, recipient: Player, latestInboundBody: string, availableCash: number) {
+    const amounts = new Set<number>();
+    const ledgerDebt = Math.floor(Math.max(0, -safeNumber(player.ledger?.[String(recipient.uid)], 0)));
+    if (ledgerDebt > 0) amounts.add(ledgerDebt);
+    for (const amount of cashAmountsInText(latestInboundBody)) amounts.add(amount);
+    return [...amounts]
+        .filter((amount) => amount > 0 && amount <= availableCash)
+        .sort((a, b) => a - b);
+}
+
+function cashAmountsInText(text: string) {
+    const amounts: number[] = [];
+    const patterns = [
+        /\$\s*(\d{1,5})\b/g,
+        /\b(\d{1,5})\s*(?:credits?|cash)\b/gi,
+    ];
+    for (const pattern of patterns) {
+        let match: RegExpExecArray | null;
+        while ((match = pattern.exec(text)) !== null) {
+            const amount = Number(match[1]);
+            if (Number.isInteger(amount) && amount > 0) amounts.push(amount);
+        }
+    }
+    return amounts;
 }
 
 function threadContext(history: DiplomacyEvent[], myUid: number, theirAlias: string) {
@@ -3834,6 +3991,10 @@ function techName(kind: number) {
 }
 
 function playerTechSummary(player: Player) {
+    return allTechKinds().map((kind) => `${techName(kind)} ${techLevel(player, kind)}`).join(", ");
+}
+
+function allTechKinds() {
     return [
         TECH.BANKING,
         TECH.RESEARCH,
@@ -3842,7 +4003,7 @@ function playerTechSummary(player: Player) {
         TECH.SCANNING,
         TECH.WEAPONS,
         TECH.TERRAFORMING,
-    ].map((kind) => `${techName(kind)} ${techLevel(player, kind)}`).join(", ");
+    ];
 }
 
 function techKindValue(value: unknown) {

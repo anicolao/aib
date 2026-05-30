@@ -69,7 +69,7 @@ export async function runTurn(config: TurnConfig): Promise<TurnResult> {
                 gameId: config.scan.gameId,
             }
             : undefined,
-        collectDiplomacyJudgementCandidates(scan, diplomacyMessages, plainDecision.diplomacyDrafts, plainDecision.damageTickSolver.selectedResearchKind),
+        collectDiplomacyJudgementCandidates(scan, diplomacyMessages, plainDecision.diplomacyDrafts, plainDecision.damageTickSolver.selectedResearchKind, plainDecision.summary.cashRemaining),
     );
     const submission = config.submit
         ? await submitLive(config, decision, scan, accountSession?.cookie)

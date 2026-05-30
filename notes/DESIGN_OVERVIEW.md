@@ -79,18 +79,19 @@ The current planner runs in this order:
 3. Reserve idle carriers already sitting at defense hubs when the hub reserve
    needs them.
 4. Plan tech-transfer responses and reserve trade cash.
-5. Pre-plan urgent defensive carrier builds.
-6. Pre-plan interior-to-hub carrier builds and core logistics carrier builds.
-7. Pre-plan bounded offensive carrier builds against high-value enemy stars.
-8. Reserve cash and ships for those mandatory/near-mandatory logistics choices.
-9. Run the portfolio damage/tick infrastructure optimizer.
-10. Emit tech transfers and possible research change to Weapons.
-11. Route existing tactical fleets for garrison, hub reserve, direct defense,
+5. Pay safe outstanding ledger debts with `send_money`.
+6. Pre-plan urgent defensive carrier builds.
+7. Pre-plan interior-to-hub carrier builds and core logistics carrier builds.
+8. Pre-plan bounded offensive carrier builds against high-value enemy stars.
+9. Reserve cash and ships for those mandatory/near-mandatory logistics choices.
+10. Run the portfolio damage/tick infrastructure optimizer.
+11. Emit tech transfers, cash transfers, and possible research change to Weapons.
+12. Route existing tactical fleets for garrison, hub reserve, direct defense,
     defense-graph reinforcement, and winning attacks.
-12. Execute carrier-build plans, neutral expansion, supply shuttles, core
+13. Execute carrier-build plans, neutral expansion, supply shuttles, core
     logistics shuttles, underloaded carrier returns, and low-priority staging.
-13. Draft diplomacy and optional attack objections.
-14. Optionally mark turn-based games ready.
+14. Draft diplomacy and optional attack objections.
+15. Optionally mark turn-based games ready.
 
 The ordering is important: tactical defense and reserved logistics constrain
 ships/cash before infrastructure and expansion consume them.
@@ -205,17 +206,24 @@ Diplomacy is intentionally constrained. The deterministic planner:
   attacked recently, and the alliance has an immediate collision, border, or
   research-visibility benefit;
 - reacts to received tech by reciprocating only when the thread names a concrete
-  equivalent-level exchange and no aggression blocks trust.
+  equivalent-level exchange and no aggression blocks trust;
+- pays outstanding negative ledger balances with `send_money,<uid>,<amount>`
+  when current or recent aggression does not block trust and cash is available.
 
 If `GEMINI_API_KEY` is available, [../src/diplomacy-style.ts](../src/diplomacy-style.ts)
 does two LLM-mediated tasks:
 
 - judge otherwise-unhandled inbound messages for whether a response is warranted
   and produce a structured JSON result;
+- choose from a whitelist of executable action IDs for concrete promises such
+  as cash transfers, tech transfers, and formal-alliance actions;
 - rewrite draft text with a stable persona selected from `(gameId + playerUid)`.
 
 The prompt explicitly requires NP hyperlink syntax for player and star names.
-The model does not decide mechanical orders.
+The model can only cause mechanical orders by returning one of the executable
+action IDs supplied by the engine; if an action is not listed, the model is
+instructed not to promise it. Fleet-movement promises are therefore disallowed
+unless a future planner exposes a specific fleet action ID.
 
 ## Recording And Debugging
 

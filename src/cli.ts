@@ -188,7 +188,7 @@ async function runDiscoveredTurns(account: AccountConfig, args: CliArgs, baseUrl
         const decision = await flavorDiplomacyDrafts(
             plainDecision,
             geminiConfig(gameId),
-            collectDiplomacyJudgementCandidates(scan, diplomacyMessages, plainDecision.diplomacyDrafts, plainDecision.damageTickSolver.selectedResearchKind),
+            collectDiplomacyJudgementCandidates(scan, diplomacyMessages, plainDecision.diplomacyDrafts, plainDecision.damageTickSolver.selectedResearchKind, plainDecision.summary.cashRemaining),
         );
         const gameAccount = {
             ...account,

@@ -3,6 +3,7 @@ export type CommandKind =
     | "fleet_order"
     | "new_fleet"
     | "tech_transfer"
+    | "cash_transfer"
     | "alliance"
     | "ready";
 

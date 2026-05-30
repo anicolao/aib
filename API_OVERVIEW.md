@@ -153,6 +153,14 @@ For AI players, `regard` influences cooperation. Existing notes indicate that
 an AI trades technology when `regard >= 0` and the cash sent is at least
 `5 * totalEconomy`.
 
+The NP client implements cash transfer as an order payload:
+
+- `send_money,<recipientUid>,<amount>`
+
+Successful transfers appear in the event feed as `money_sent` and update the
+player ledger. Ledger values below zero mean the scanning player owes that
+amount; the stock client exposes these as "pay debt" actions.
+
 ## Technology
 
 `tech` is keyed by technology kind. Known kinds are:
