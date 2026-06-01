@@ -5,15 +5,22 @@ const DISCORD_CONTENT_LIMIT = 2000;
 const SAFE_CONTENT_LIMIT = 1900;
 const MAX_DISCORD_ATTEMPTS = 6;
 const RETRY_MARGIN_MS = 100;
+const DEFAULT_DISCORD_TIMEOUT_MS = 15_000;
+const MAX_RETRY_DELAY_MS = 10_000;
 
 export interface DiscordWebhookConfig {
     url: string;
     username?: string;
 }
 
-export async function postMarkdownToDiscord(markdown: string, config: DiscordWebhookConfig) {
+export async function postMarkdownToDiscord(
+    markdown: string,
+    config: DiscordWebhookConfig,
+    onChunk?: (index: number, total: number) => void,
+) {
     const chunks = splitDiscordMarkdown(markdown);
-    for (const chunk of chunks) {
+    for (const [index, chunk] of chunks.entries()) {
+        onChunk?.(index + 1, chunks.length);
         await postDiscordMessage(chunk, config);
     }
     return chunks.length;
@@ -99,7 +106,7 @@ async function postDiscordMessage(content: string, config: DiscordWebhookConfig)
     if (config.username) payload.username = config.username;
 
     for (let attempt = 1; attempt <= MAX_DISCORD_ATTEMPTS; attempt += 1) {
-        const response = await fetch(config.url, {
+        const response = await discordFetch(config.url, {
             method: "POST",
             headers: {
                 "content-type": "application/json",
@@ -108,9 +115,9 @@ async function postDiscordMessage(content: string, config: DiscordWebhookConfig)
         });
         if (response.ok) return;
 
-        const body = await response.text();
+        const body = await responseText(response);
         if (response.status === 429 && attempt < MAX_DISCORD_ATTEMPTS) {
-            await sleep(discordRetryDelayMs(response, body));
+            await sleep(Math.min(discordRetryDelayMs(response, body), MAX_RETRY_DELAY_MS));
             continue;
         }
         throw new Error(`Discord webhook failed with HTTP ${response.status}: ${body.slice(0, 500)}`);
@@ -130,15 +137,15 @@ async function postDiscordFile(file: Buffer, filename: string, content: string, 
         form.append("payload_json", JSON.stringify(payload));
         form.append("files[0]", new Blob([Uint8Array.from(file)], { type: "image/png" }), filename);
 
-        const response = await fetch(config.url, {
+        const response = await discordFetch(config.url, {
             method: "POST",
             body: form,
         });
         if (response.ok) return;
 
-        const body = await response.text();
+        const body = await responseText(response);
         if (response.status === 429 && attempt < MAX_DISCORD_ATTEMPTS) {
-            await sleep(discordRetryDelayMs(response, body));
+            await sleep(Math.min(discordRetryDelayMs(response, body), MAX_RETRY_DELAY_MS));
             continue;
         }
         throw new Error(`Discord webhook file upload failed with HTTP ${response.status}: ${body.slice(0, 500)}`);
@@ -161,6 +168,53 @@ function retryAfterFromBody(body: string) {
     } catch {
         return undefined;
     }
+}
+
+async function discordFetch(url: string, init: RequestInit) {
+    const timeoutMs = discordTimeoutMs();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, {
+            ...init,
+            signal: controller.signal,
+        });
+    } catch (error) {
+        if (isAbortError(error)) {
+            throw new Error(`Discord webhook request timed out after ${timeoutMs}ms`);
+        }
+        throw error;
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+async function responseText(response: Response) {
+    const timeoutMs = discordTimeoutMs();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([
+            response.text(),
+            new Promise<string>((_, reject) => {
+                timeout = setTimeout(() => {
+                    reject(new Error(`Discord webhook response timed out after ${timeoutMs}ms`));
+                }, timeoutMs);
+            }),
+        ]);
+    } finally {
+        if (timeout) clearTimeout(timeout);
+    }
+}
+
+function discordTimeoutMs() {
+    const raw = process.env.AIB_DISCORD_TIMEOUT_MS;
+    if (!raw) return DEFAULT_DISCORD_TIMEOUT_MS;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? Math.ceil(parsed) : DEFAULT_DISCORD_TIMEOUT_MS;
+}
+
+function isAbortError(error: unknown) {
+    return error instanceof Error && error.name === "AbortError";
 }
 
 function sleep(ms: number) {

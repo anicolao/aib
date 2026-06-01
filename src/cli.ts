@@ -532,7 +532,9 @@ function printMarkdown(markdown: string) {
 async function postDiscordSummary(markdown: string, config: DiscordWebhookConfig | undefined) {
     if (!config) return;
     process.stdout.write("Discord webhook: posting summary...\n");
-    const count = await postMarkdownToDiscord(discordSummaryMarkdown(markdown, config), config);
+    const count = await postMarkdownToDiscord(discordSummaryMarkdown(markdown, config), config, (index, total) => {
+        process.stdout.write(`Discord webhook: posting summary message ${index}/${total}...\n`);
+    });
     process.stdout.write(`Discord webhook: posted ${count} message${count === 1 ? "" : "s"}.\n`);
 }
 
