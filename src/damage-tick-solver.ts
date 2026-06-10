@@ -332,7 +332,7 @@ function researchProjection(
     const researchCompletionBonus = selectedResearchKind === TECH.WEAPONS && weaponsCompletionTick !== undefined && weaponsCompletionTick <= horizonTicks
         ? weaponSwing * (1 + (horizonTicks - weaponsCompletionTick) / horizonTicks)
         : 0;
-    const economyScore = productionEventsWithin(scan, horizonTicks) * projectedEconomy(stars) * 0.8;
+    const economyScore = productionEventsWithin(scan, horizonTicks) * projectedEconomy(stars) * incomePerEconomy(player) * 0.45;
     const scienceFloorScore = projectedScience * scienceStrategicWeight(scan, player) * 2.2;
     const objectiveValue = damageScore + scienceMomentum + researchCompletionBonus + economyScore + scienceFloorScore;
     const weaponsTiming = weaponsCompletionTick === undefined
@@ -526,10 +526,12 @@ function terminalInfrastructureValue(
     const scienceTarget = Math.max(1, economy * 0.25);
     const weaponsGap = Math.max(0, bestVisibleEnemyWeapons(scan) - techLevel(player, TECH.WEAPONS));
     const scienceUrgency = Math.min(1.5, weaponsGap / 8);
-    const productionCycleValue = productionEventsWithin(scan, horizonTicks) * 0.8
-        + Math.max(1, horizonTicks / Math.max(1, scan.productionRate)) * 0.35;
-    let total = economy * productionCycleValue
-        + balancedUnitValue(stars, (star) => star.e, Number.POSITIVE_INFINITY, productionCycleValue * 1.8, (star) => defendabilityWeight(defenseGraph, star))
+    const economyCashFlowValue = incomePerEconomy(player) * (
+        productionEventsWithin(scan, horizonTicks) * 0.9
+        + Math.max(1, horizonTicks / Math.max(1, scan.productionRate)) * 0.25
+    );
+    let total = economy * economyCashFlowValue * 0.2
+        + balancedUnitValue(stars, (star) => star.e, Number.POSITIVE_INFINITY, economyCashFlowValue * 0.8, (star) => defendabilityWeight(defenseGraph, star))
         + balancedUnitValue(stars, (star) => star.s, scienceTarget, 42 + scienceUrgency * 10, (star) => defendabilityWeight(defenseGraph, star))
         + balancedUnitValue(stars, (star) => star.s, Number.POSITIVE_INFINITY, 2, (star) => defendabilityWeight(defenseGraph, star));
     for (const star of stars) {
@@ -628,8 +630,11 @@ function productionEventsWithin(scan: ScanningData, horizonTicks: number) {
 }
 
 function productionIncomeWithin(scan: ScanningData, player: Player, stars: SolverStar[], horizonTicks: number) {
-    const incomePerEconomy = 10 + 2 * techLevel(player, TECH.BANKING);
-    return productionEventsWithin(scan, horizonTicks) * projectedEconomy(stars) * incomePerEconomy;
+    return productionEventsWithin(scan, horizonTicks) * projectedEconomy(stars) * incomePerEconomy(player);
+}
+
+function incomePerEconomy(player: Player) {
+    return 10 + 2 * techLevel(player, TECH.BANKING);
 }
 
 function crossesProductionBoundaryNextTurn(scan: ScanningData) {

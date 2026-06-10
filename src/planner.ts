@@ -852,8 +852,11 @@ function logisticsBudget(
     const afterReserve = Math.max(0, cash - mandatoryReserve);
     if (afterReserve <= 0) return 0;
     const bestInfraCost = infraCandidates(scan, player, cloneMutableStars(stars), afterReserve, plannerConfig)[0]?.cost ?? 0;
-    const minimumInfraBudget = bestInfraCost > 0 ? bestInfraCost : Math.floor(afterReserve * 0.5);
-    const outsideEmergencyCap = Math.floor(afterReserve * 0.25);
+    const range = rangeValue(player);
+    const speed = Math.max(scan.fleetSpeed, 0.0001);
+    const hasReachableNeutral = reachableNeutralTargets(scan, stars, range, speed, plannerConfig.horizonTicks).length > 0;
+    const minimumInfraBudget = bestInfraCost > 0 ? bestInfraCost : 0;
+    const outsideEmergencyCap = Math.floor(afterReserve * (hasReachableNeutral ? 0.75 : 0.25));
     return Math.max(0, Math.min(outsideEmergencyCap, afterReserve - minimumInfraBudget));
 }
 
