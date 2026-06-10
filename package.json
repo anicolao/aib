@@ -11,7 +11,7 @@
   "license": "ISC",
   "type": "module",
   "scripts": {
-    "test": "npm run typecheck",
+    "test": "npm run typecheck && node --no-warnings --loader ts-node/esm src/replay-checks.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "turn:dry-run": "node --no-warnings --loader ts-node/esm src/cli.ts",
