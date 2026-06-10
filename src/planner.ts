@@ -395,6 +395,7 @@ interface GameEvent {
         level?: unknown;
         attackers?: unknown;
         defenders?: unknown;
+        star?: unknown;
     };
 }
 
@@ -1051,8 +1052,8 @@ function planCashTransfers(
         const debt = Math.floor(-ledgerValue);
         if (debt <= 0) continue;
         const aggr = aggressionStatus(scan, recipientUid, gameEvents, incomingAttackerUids);
-        if (aggr.incoming || aggr.recent) {
-            rejected.push(`skipped cash transfer to ${recipient.alias}: current or recent aggression blocks paying ledger debt $${debt}`);
+        if (aggr.incoming || aggr.recent || aggr.anyPast && !isCollaboratorAlias(recipient.alias)) {
+            rejected.push(`skipped cash transfer to ${recipient.alias}: current or unresolved past aggression blocks paying ledger debt $${debt}`);
             continue;
         }
         const available = safeNumber(player.cash, 0) - reservedCash - reserveCost;
@@ -1379,6 +1380,10 @@ function aggressionTickAgainstUs(scan: ScanningData, otherUid: number, event: un
     const tick = numeric(payload.tick);
     if (tick === undefined) return undefined;
     if (combatantsInclude(payload.attackers, otherUid) && combatantsInclude(payload.defenders, scan.playerUid)) {
+        return tick;
+    }
+    const starOwner = numeric((payload.star as { puid?: unknown } | undefined)?.puid);
+    if (starOwner === scan.playerUid && combatantsInclude(payload.attackers, otherUid)) {
         return tick;
     }
     return undefined;
@@ -3437,6 +3442,23 @@ function assignWinningAttacks(scan: ScanningData, ownFleets: Fleet[], assignedFl
     const range = rangeValue(scan.players[String(scan.playerUid)]);
     const margin = offensiveBattleMargin(scan);
 
+    for (const target of enemyTargets) {
+        if (attackedTargetUids.has(target.uid)) continue;
+        const group = bestSynchronizedAttackGroup(scan, ownFleets, assignedFleetUids, target, range, margin);
+        if (!group) continue;
+        attackedTargetUids.add(target.uid);
+        for (const fleet of group.fleets) {
+            assignedFleetUids.add(fleet.uid);
+            assignments.push({
+                fleet,
+                target,
+                eta: etaFromFleet(scan, fleet, target),
+                role: "attack",
+                reason: `synchronized attack on ${target.n} (value ${territoryValue(target)}); package ${group.fleets.map((entry) => entry.uid).join("+")} totals ${group.totalShips} ships by eta ${group.latestEta.toFixed(1)} and wins with ${group.remaining} ships remaining against margin ${margin}`,
+            });
+        }
+    }
+
     for (const fleet of idleOrbitingFleets(ownFleets, assignedFleetUids)) {
         const attack = enemyTargets
             .filter((target) => !attackedTargetUids.has(target.uid))
@@ -3464,6 +3486,71 @@ function assignWinningAttacks(scan: ScanningData, ownFleets: Fleet[], assignedFl
         });
     }
     return assignments;
+}
+
+function bestSynchronizedAttackGroup(
+    scan: ScanningData,
+    ownFleets: Fleet[],
+    assignedFleetUids: Set<number>,
+    target: ScannedStar,
+    range: number,
+    margin: number,
+) {
+    const turnWindow = scan.turnBased === 1 ? Math.max(1, scan.config.turnJumpTicks) : 1;
+    const candidates = idleOrbitingFleets(ownFleets, assignedFleetUids)
+        .map((fleet) => ({
+            fleet,
+            eta: etaFromFleet(scan, fleet, target),
+            distance: distanceFromFleetOrigin(scan, fleet, target),
+        }))
+        .filter((candidate) => candidate.distance <= range)
+        .sort((a, b) => a.eta - b.eta || b.fleet.st - a.fleet.st || a.fleet.uid - b.fleet.uid)
+        .slice(0, 10);
+    let best: { fleets: Fleet[]; totalShips: number; latestEta: number; remaining: number } | undefined;
+
+    const search = (index: number, selected: typeof candidates, totalShips: number, latestEta: number) => {
+        if (selected.length > 0) {
+            const earliestEta = Math.min(...selected.map((entry) => entry.eta));
+            if (latestEta - earliestEta <= turnWindow) {
+                const estimate = estimateStarBattle(
+                    scan,
+                    scan.playerUid,
+                    totalShips,
+                    target,
+                    latestEta,
+                    orbitingShipsAt(scan, target.uid, target.puid, latestEta),
+                );
+                if (estimate.attackerWins && estimate.attackerRemaining >= margin) {
+                    if (!best
+                        || totalShips < best.totalShips
+                        || totalShips === best.totalShips && latestEta < best.latestEta) {
+                        best = {
+                            fleets: selected.map((entry) => entry.fleet),
+                            totalShips,
+                            latestEta,
+                            remaining: estimate.attackerRemaining,
+                        };
+                    }
+                    return;
+                }
+            }
+        }
+        if (index >= candidates.length) return;
+        for (let i = index; i < candidates.length; i += 1) {
+            const candidate = candidates[i];
+            if (!candidate) continue;
+            search(
+                i + 1,
+                [...selected, candidate],
+                totalShips + candidate.fleet.st,
+                Math.max(latestEta, candidate.eta),
+            );
+        }
+    };
+
+    search(0, [], 0, 0);
+    if (!best || best.fleets.length <= 1) return undefined;
+    return best;
 }
 
 function isWorthOpportunisticEnemyAttack(star: ScannedStar) {
