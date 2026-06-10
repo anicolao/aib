@@ -5,6 +5,7 @@ import { computeDefenseGraph, type DefenseGraphPlan } from "./defense-graph.js";
 import { optimizeDamageTickInfrastructure, type DamageTickSolverPlan } from "./damage-tick-solver.js";
 import { activePlayer, alliancesEnabled, DIPLOMACY_STATUS, hasAllianceOfferFrom, hasRequestedAlliance, isEnemyPlayer, isFormalAlly } from "./relations.js";
 import { intrinsicStarValue } from "./star-value.js";
+import { buildStrategicState, isCollaboratorAlias, requestedTechKindsFromUs, type StrategicState } from "./strategic-state.js";
 
 export interface PlannerConfig {
     horizonTicks: number;
@@ -470,6 +471,7 @@ export function planTurn(
 
     const rejected: string[] = [];
     const initialOwnFleets = Object.values(scan.fleets).filter((fleet) => fleet.puid === scan.playerUid);
+    const strategicState = buildStrategicState(scan, diplomacyMessages);
     const alliancePlan = planFormalAlliances(
         scan,
         initialOwnFleets,
@@ -478,7 +480,10 @@ export function planTurn(
         preliminaryIncomingAttackerUids(scan),
         rejected,
     );
-    const planningScan = scanWithAcceptedAlliances(scan, alliancePlan.acceptedPlayerUids);
+    const planningScan = scanWithAcceptedAlliances(scan, [
+        ...alliancePlan.acceptedPlayerUids,
+        ...collaboratorsWithoutVisibleAttacks(scan, strategicState, preliminaryIncomingAttackerUids(scan)),
+    ]);
     const player = planningScan.players[String(planningScan.playerUid)];
     if (!player) {
         throw new Error(`Player ${planningScan.playerUid} was not present in scan`);
@@ -490,7 +495,8 @@ export function planTurn(
         frontierWeight: frontierWeight(planningScan, star),
     }));
     const ownFleets = Object.values(planningScan.fleets).filter((fleet) => fleet.puid === planningScan.playerUid);
-    const tacticalPlan = planTactics(planningScan, stars, ownFleets, config, rejected);
+    const planningStrategicState = buildStrategicState(planningScan, diplomacyMessages);
+    const tacticalPlan = planTactics(planningScan, stars, ownFleets, config, planningStrategicState, rejected);
     const tacticalFleetUids = new Set(tacticalPlan.assignments.map((assignment) => assignment.fleet.uid));
     reserveIdleDefenseHubFleets(planningScan, ownFleets, tacticalPlan.defenseGraph, tacticalFleetUids, rejected);
     const techTransferPlan = planTechTransfers(planningScan, diplomacyMessages, gameEvents, tacticalPlan);
@@ -530,6 +536,7 @@ export function planTurn(
             defensiveCarrierPlan.buildCount + interiorHubSupplyPlan.buildCount + coreLogisticsCarrierPlan.buildCount,
             preliminaryReserveByStarUid,
             config.horizonTicks,
+            planningStrategicState,
             rejected,
         )
         : { assignments: [], buildCount: 0, buildCost: 0, reservedSourceShipsByStarUid: {} };
@@ -961,7 +968,61 @@ function planTechTransfers(
         alreadyHandled.add(receipt.fromUid);
     }
 
+    for (const request of explicitInboundTechRequests(scan, diplomacyMessages, gameEvents, incomingAttackerUids)) {
+        if (alreadyHandled.has(request.recipient.uid)) continue;
+        const cost = techTradeCost(scan, request.levelToSend);
+        if (safeNumber(player.cash, 0) - reserveCost < cost) continue;
+        commands.push({
+            kind: "tech_transfer",
+            order: `share_tech,${request.recipient.uid},${request.techKind}`,
+            reason: `fulfill explicit diplomacy request from ${request.recipient.alias}: send ${techName(request.techKind)} level ${request.levelToSend}; ${request.reason}`,
+        });
+        reserveCost += cost;
+        alreadyHandled.add(request.recipient.uid);
+    }
+
     return { commands, diplomacyDrafts, reserveCost };
+}
+
+function explicitInboundTechRequests(
+    scan: ScanningData,
+    diplomacyMessages: unknown[],
+    gameEvents: unknown[],
+    incomingAttackerUids: Set<number>,
+) {
+    const player = scan.players[String(scan.playerUid)];
+    if (!player) return [];
+    return Object.values(scan.players)
+        .filter((candidate) => candidate.uid !== scan.playerUid && activePlayer(scan, candidate.uid))
+        .flatMap((candidate) => {
+            const history = diplomacyHistoryWith(scan.playerUid, candidate.uid, diplomacyMessages);
+            const latestInbound = latestMessageFrom(candidate.uid, history);
+            if (!latestInbound?.body) return [];
+            const latestOutbound = latestMessageFrom(scan.playerUid, history);
+            if (latestOutbound && latestOutbound.created >= latestInbound.created) return [];
+            const aggr = aggressionStatus(scan, candidate.uid, gameEvents, incomingAttackerUids);
+            if (aggr.incoming || aggr.recent) return [];
+            return requestedTechKindsFromUs(latestInbound.body)
+                .map((techKind) => {
+                    const recipientLevel = techLevel(candidate, techKind);
+                    const ourLevel = techLevel(player, techKind);
+                    const levelToSend = recipientLevel + 1;
+                    if (ourLevel < levelToSend) return undefined;
+                    return {
+                        recipient: candidate,
+                        techKind,
+                        levelToSend,
+                        reason: "latest inbound message explicitly asks us to send this technology",
+                    };
+                })
+                .filter((request): request is {
+                    recipient: Player;
+                    techKind: number;
+                    levelToSend: number;
+                    reason: string;
+                } => request !== undefined);
+        })
+        .sort((a, b) => b.levelToSend - a.levelToSend || a.recipient.uid - b.recipient.uid || a.techKind - b.techKind);
 }
 
 function planCashTransfers(
@@ -1069,9 +1130,10 @@ function planFormalAlliances(
 
         if (isFormalAlly(scan, other.uid) || hasRequestedAlliance(scan, other.uid)) continue;
         const playerCollisions = collisionsByPlayer.get(other.uid) ?? [];
-        if (playerCollisions.length === 0) continue;
+        const collaborator = isCollaboratorAlias(other.alias);
+        if (playerCollisions.length === 0 && !collaborator) continue;
         const aggr = aggressionStatus(scan, other.uid, gameEvents, incomingAttackerUids);
-        if (aggr.incoming || aggr.recent) {
+        if (aggr.incoming || aggr.recent && !collaborator) {
             rejected.push(`skipped formal alliance offer to ${other.alias}: current or recent aggression makes exploration collision diplomacy inappropriate`);
             continue;
         }
@@ -1080,7 +1142,9 @@ function planFormalAlliances(
         commands.push({
             kind: "alliance",
             order: `request_peace,${other.uid}`,
-            reason: `request formal alliance from ${other.alias} because visible exploration fleets have unavoidable collision risk at ${playerCollisions.map((collision) => collision.targetName).join(", ")}`,
+            reason: collaborator
+                ? `request formal alliance from collaborator ${other.alias} so controlled empires do not waste ships on each other`
+                : `request formal alliance from ${other.alias} because visible exploration fleets have unavoidable collision risk at ${playerCollisions.map((collision) => collision.targetName).join(", ")}`,
         });
 
         const targetList = playerCollisions
@@ -1092,13 +1156,21 @@ function planFormalAlliances(
             player,
             other,
             "Formal alliance request",
-            [
-                `Hi ${npLink(other.alias)}, our exploration carriers appear committed toward the same space: ${targetList}.`,
-                "Since carriers already in flight cannot be redirected, the cleanest way to avoid accidental casualties is a formal alliance.",
-                "I have sent a formal alliance request. If you accept it, our carriers will avoid fighting over exploration traffic and we can coordinate borders from there.",
-                `- ${npLink(player.alias)}`,
-            ].join("\n\n"),
-            `${other.alias} has unavoidable exploration collision risk; draft explains the formal alliance request`,
+            collaborator
+                ? [
+                    `Hi ${npLink(other.alias)}, I have sent a formal alliance request.`,
+                    "Our empires should be coordinating rather than spending ships against each other. The alliance will keep our carriers from wasting strength on shared borders while we focus outward.",
+                    `- ${npLink(player.alias)}`,
+                ].join("\n\n")
+                : [
+                    `Hi ${npLink(other.alias)}, our exploration carriers appear committed toward the same space: ${targetList}.`,
+                    "Since carriers already in flight cannot be redirected, the cleanest way to avoid accidental casualties is a formal alliance.",
+                    "I have sent a formal alliance request. If you accept it, our carriers will avoid fighting over exploration traffic and we can coordinate borders from there.",
+                    `- ${npLink(player.alias)}`,
+                ].join("\n\n"),
+            collaborator
+                ? `${other.alias} is a known collaborator; draft explains the formal alliance request`
+                : `${other.alias} has unavoidable exploration collision risk; draft explains the formal alliance request`,
             history,
             threadKey,
         ));
@@ -1135,6 +1207,15 @@ function allianceDiplomacyDraft(
 function preliminaryIncomingAttackerUids(scan: ScanningData) {
     const stars = ownedScannedStars(scan).map((star) => ({ ...star, frontierWeight: 1 }));
     return new Set(visibleIncomingAttacks(scan, stars).map((attack) => attack.attacker.uid));
+}
+
+function collaboratorsWithoutVisibleAttacks(
+    scan: ScanningData,
+    strategicState: StrategicState,
+    incomingAttackerUids: Set<number>,
+) {
+    return [...strategicState.collaboratorUids]
+        .filter((uid) => !incomingAttackerUids.has(uid));
 }
 
 function scanWithAcceptedAlliances(scan: ScanningData, acceptedPlayerUids: number[]) {
@@ -1215,6 +1296,7 @@ function assessAllianceBenefit(
 ) {
     const aggr = aggressionStatus(scan, other.uid, gameEvents, incomingAttackerUids);
     if (aggr.incoming) return { accept: false, reason: "they have visible attacks inbound" };
+    if (isCollaboratorAlias(other.alias)) return { accept: true, reason: "known collaborator; alliance prevents wasteful bot-on-bot fighting" };
     if (aggr.recent) return { accept: false, reason: "they attacked us in the last 30 ticks" };
     if (collisions.length > 0) return { accept: true, reason: `it avoids unavoidable exploration collision risk at ${collisions.map((collision) => collision.targetName).join(", ")}` };
 
@@ -1401,6 +1483,7 @@ function planTactics(
     stars: MutableStar[],
     ownFleets: Fleet[],
     config: PlannerConfig,
+    strategicState: StrategicState,
     rejected: string[],
 ): TacticalPlan {
     const assignments: FleetRouteAssignment[] = [];
@@ -1438,7 +1521,7 @@ function planTactics(
     const defenseGraphAssignments = assignDefenseGraphReinforcements(scan, ownFleets, defenseGraph, assignedFleetUids, config.horizonTicks);
     assignments.push(...defenseGraphAssignments);
 
-    const attackOpportunities = assignWinningAttacks(scan, ownFleets, assignedFleetUids);
+    const attackOpportunities = assignWinningAttacks(scan, ownFleets, assignedFleetUids, strategicState);
     assignments.push(...attackOpportunities);
 
     if (incomingAttacks.length === 0 && attackOpportunities.length === 0 && !rallyPlan) {
@@ -2501,6 +2584,7 @@ function planOffensiveCarrierBuilds(
     builtCarriersThisTurn: number,
     reserveByStarUid: Record<number, number>,
     horizonTicks: number,
+    strategicState: StrategicState,
     rejected: string[],
 ): OffensiveCarrierPlan {
     const assignments: OffensiveCarrierAssignment[] = [];
@@ -2514,7 +2598,7 @@ function planOffensiveCarrierBuilds(
             rejected.push(`cannot build offensive carrier; $${cashAvailable} cash cannot cover reserved $${reservedCash + buildCost} plus carrier cost $${cost}`);
             break;
         }
-        const assignment = bestOffensiveCarrierBuild(scan, stars, sourceShips, attackedTargetUids, cost, horizonTicks);
+        const assignment = bestOffensiveCarrierBuild(scan, stars, sourceShips, attackedTargetUids, cost, horizonTicks, strategicState);
         if (!assignment) break;
         sourceShips.set(assignment.source.uid, (sourceShips.get(assignment.source.uid) ?? 0) - assignment.ships);
         assignments.push(assignment);
@@ -2544,6 +2628,7 @@ function bestOffensiveCarrierBuild(
     attackedTargetUids: Set<number>,
     cost: number,
     horizonTicks: number,
+    strategicState: StrategicState,
 ): OffensiveCarrierAssignment | undefined {
     const range = rangeValue(scan.players[String(scan.playerUid)]);
     const speed = Math.max(scan.fleetSpeed, 0.0001);
@@ -2551,6 +2636,7 @@ function bestOffensiveCarrierBuild(
     return Object.values(scan.stars)
         .filter((target): target is ScannedStar => isScanned(target) && target.puid > 0 && isEnemyPlayer(scan, target.puid))
         .filter((target) => !attackedTargetUids.has(target.uid))
+        .filter((target) => !strategicState.forbiddenTargetUids.has(target.uid))
         .filter(isWorthOpportunisticEnemyAttack)
         .flatMap((target) => stars.map((source) => {
             const availableShips = Math.max(0, sourceShips.get(source.uid) ?? 0);
@@ -3337,11 +3423,12 @@ function assignDefenseGraphReinforcements(
     return assignments;
 }
 
-function assignWinningAttacks(scan: ScanningData, ownFleets: Fleet[], assignedFleetUids: Set<number>) {
+function assignWinningAttacks(scan: ScanningData, ownFleets: Fleet[], assignedFleetUids: Set<number>, strategicState: StrategicState) {
     const assignments: FleetRouteAssignment[] = [];
     const attackedTargetUids = friendlyAttackTargetUids(scan, ownFleets);
     const enemyTargets = Object.values(scan.stars)
         .filter((star): star is ScannedStar => isScanned(star) && star.puid > 0 && isEnemyPlayer(scan, star.puid))
+        .filter((star) => !strategicState.forbiddenTargetUids.has(star.uid))
         .filter(isWorthOpportunisticEnemyAttack)
         .sort((a, b) => territoryValue(b) - territoryValue(a) || b.st - a.st || a.uid - b.uid);
     const range = rangeValue(scan.players[String(scan.playerUid)]);
